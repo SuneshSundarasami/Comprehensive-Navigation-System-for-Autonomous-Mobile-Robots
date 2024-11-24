@@ -5,6 +5,7 @@ from rclpy.node import Node
 import time
 import math
 from nav_msgs.msg import Odometry
+from sensor_msgs.msg import LaserScan
 import tf_transformations
 from geometry_msgs.msg import Twist
 import numpy as np
@@ -17,10 +18,16 @@ class PotentialFieldMappingModel(Node):
                      'y':-3.5,
                      'theta':2}
         self.publisher = self.create_publisher(Twist, '/cmd_vel', 10)
-        self.subscription = self.create_subscription(
+        self.odom_subscription = self.create_subscription(
             Odometry,
-            '/odom',  # You can change this to the correct topic if it's different
+            '/odom',  
             self.odom_callback,
+            10)
+        
+        self.scan_subscription = self.create_subscription(
+            LaserScan,
+            '/scan',  
+            self.scan_callback,
             10)
         
         self.__goal={
@@ -64,6 +71,14 @@ class PotentialFieldMappingModel(Node):
         twist.linear.x=v_attraction[0]
         twist.linear.y=v_attraction[1]
         self.publisher.publish(twist)
+
+
+    def scan_callback(self, msg):
+        angleArr = np.arange(msg.angle_min, msg.angle_max, msg.angle_increment)
+        ranges = np.array(msg.ranges)
+        self.get_logger().info(f"size of angle Arr: {angleArr.shape[0]}")
+        self.get_logger().info(f"ranges -> { ranges}")
+        self.get_logger().info(f"ranges -> { ranges.shape[0]} type - >{ type(ranges)}")
 
 
 def main(args=None):

@@ -23,11 +23,14 @@ class PotentialFieldMappingModel(Node):
             self.odom_callback,
             10)
         
-        self._pathangleallinged=False
-        self._distancereached=False
-        self._goalangleallinged=False
+        self.__goal={
+            "x":4.0,
+            "y":10.0,
+            "theta":-1.0
+        }
 
-        
+        self.__ka= 1
+
 
     def odom_callback(self, msg):
         # self.get_logger().info(f"-------------------------------------------------------------------")
@@ -44,6 +47,23 @@ class PotentialFieldMappingModel(Node):
         
         self.get_logger().info(f"Robot Position: x={current_x}, y={current_y}, theta={ak}")
         self.get_logger().info(f"Robot Orientation: row={ai}, pitch={aj}, yaw={ak}")
+
+        current_position=np.array([current_x,current_y])
+
+        goal_position= np.array([self.__goal['x'],self.__goal['y']])
+
+
+        v_attraction= - (self.__ka)*  (current_position-goal_position) /  np.linalg.norm(current_position-goal_position)
+
+
+        self.get_logger().info(f"Attraction velocities: v_attraction:{ v_attraction} v_attraction_x={v_attraction[0]}, v_attraction_y={v_attraction[1]}")
+
+
+
+        twist=Twist()
+        twist.linear.x=v_attraction[0]
+        twist.linear.y=v_attraction[1]
+        self.publisher.publish(twist)
 
 
 def main(args=None):

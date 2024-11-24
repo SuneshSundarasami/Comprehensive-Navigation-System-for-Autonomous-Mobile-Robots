@@ -10,6 +10,7 @@ from tf2_msgs.msg import TFMessage
 import tf_transformations
 from geometry_msgs.msg import Twist
 import numpy as np
+import tf2_ros
 
 class PotentialFieldMappingModel(Node):
     def __init__(self):
@@ -19,24 +20,24 @@ class PotentialFieldMappingModel(Node):
                      'y':-3.5,
                      'theta':2}
         self.publisher = self.create_publisher(Twist, '/cmd_vel', 10)
-        self.odom_subscription = self.create_subscription(
-            Odometry,
-            '/odom',  
-            self.odom_callback,
-            10)
+        # self.odom_subscription = self.create_subscription(
+        #     Odometry,
+        #     '/odom',  
+        #     self.odom_callback,
+        #     10)
         
-        self.scan_subscription = self.create_subscription(
-            LaserScan,
-            '/scan',  
-            self.scan_callback,
-            10)
+        # self.scan_subscription = self.create_subscription(
+        #     LaserScan,
+        #     '/scan',  
+        #     self.scan_callback,
+        #     10)
         
-        self.tf_subscription = self.create_subscription(
-            TFMessage,  
-            '/tf_static', 
-            self.tf_callback,
-            10  
-        )
+        # self.tf_subscription = self.create_subscription(
+        #     TFMessage,  
+        #     '/tf_static', 
+        #     self.tf_callback,
+        #     10  
+        # )
         
         self.__goal={
             "x":4.0,
@@ -45,6 +46,25 @@ class PotentialFieldMappingModel(Node):
         }
 
         self.__ka= 1
+
+
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+
+        self.timer = self.create_timer(5.0, self.list_transforms)  # Every 5 seconds
+
+    def list_transforms(self):
+        try:
+            # Get all transformations as a string
+            transforms_str = self.tf_buffer.all_frames_as_string()
+            if transforms_str:
+                self.get_logger().info(f"Available Transformations:\n{transforms_str}")
+            else:
+                self.get_logger().info("No transformations available.")
+        except Exception as e:
+            self.get_logger().error(f"Error listing transformations: {e}")
+
+
 
 
     def odom_callback(self, msg):

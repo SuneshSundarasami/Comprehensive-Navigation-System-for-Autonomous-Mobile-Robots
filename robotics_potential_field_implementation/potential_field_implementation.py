@@ -1,0 +1,57 @@
+
+
+import rclpy
+from rclpy.node import Node
+import time
+import math
+from nav_msgs.msg import Odometry
+import tf_transformations
+from geometry_msgs.msg import Twist
+import numpy as np
+
+class PotentialFieldMappingModel(Node):
+    def __init__(self):
+        super().__init__('PotentialFieldMappingModel_node')
+
+        self.target={'x':1.5,
+                     'y':-3.5,
+                     'theta':2}
+        self.publisher = self.create_publisher(Twist, '/cmd_vel', 10)
+        self.subscription = self.create_subscription(
+            Odometry,
+            '/odom',  # You can change this to the correct topic if it's different
+            self.odom_callback,
+            10)
+        
+        self._pathangleallinged=False
+        self._distancereached=False
+        self._goalangleallinged=False
+
+        
+
+    def odom_callback(self, msg):
+        # self.get_logger().info(f"-------------------------------------------------------------------")
+        current_x = msg.pose.pose.position.x
+        current_y = msg.pose.pose.position.y
+        current_z = msg.pose.pose.position.z
+        current_orientation = msg.pose.pose.orientation
+
+        # self.get_logger().info(f"Robot Position: x={current_x}, y={current_y}, z={current_z}")
+        # self.get_logger().info(f"Robot Orientation: x={current_orientation.x}, y={current_orientation.y}, z={current_orientation.z}, w={current_orientation.w}")
+
+        ai, aj, ak=tf_transformations.euler_from_quaternion([current_orientation.x,current_orientation.y
+                                         ,current_orientation.z,current_orientation.w])
+        
+        self.get_logger().info(f"Robot Position: x={current_x}, y={current_y}, theta={ak}")
+        self.get_logger().info(f"Robot Orientation: row={ai}, pitch={aj}, yaw={ak}")
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = PotentialFieldMappingModel()
+    rclpy.spin(node)
+    node.destroy_node()
+    rclpy.shutdown()
+
+if __name__ == '__main__':
+    main()

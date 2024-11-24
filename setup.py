@@ -20,6 +20,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            f'pfieldmodel = {package_name}.potential_field_implementation:main',
         ],
     },
 )

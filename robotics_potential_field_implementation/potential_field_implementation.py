@@ -6,6 +6,7 @@ import time
 import math
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
+from tf2_msgs.msg import TFMessage
 import tf_transformations
 from geometry_msgs.msg import Twist
 import numpy as np
@@ -29,6 +30,13 @@ class PotentialFieldMappingModel(Node):
             '/scan',  
             self.scan_callback,
             10)
+        
+        self.tf_subscription = self.create_subscription(
+            TFMessage,  
+            '/tf_static', 
+            self.tf_callback,
+            10  
+        )
         
         self.__goal={
             "x":4.0,
@@ -70,15 +78,38 @@ class PotentialFieldMappingModel(Node):
         twist=Twist()
         twist.linear.x=v_attraction[0]
         twist.linear.y=v_attraction[1]
-        self.publisher.publish(twist)
+        # self.publisher.publish(twist)
 
 
     def scan_callback(self, msg):
         angleArr = np.arange(msg.angle_min, msg.angle_max, msg.angle_increment)
         ranges = np.array(msg.ranges)
         self.get_logger().info(f"size of angle Arr: {angleArr.shape[0]}")
-        self.get_logger().info(f"ranges -> { ranges}")
         self.get_logger().info(f"ranges -> { ranges.shape[0]} type - >{ type(ranges)}")
+
+        np_polar=np.stack([angleArr,ranges],axis=1)
+
+
+
+        # below code to be defined in func np_polar2cart - converts polar to cartesian
+        cart_arr = np.array([[np.cos(i[0])*i[1], np.sin(i[0])*i[1]] for i in np_polar])
+
+        self.get_logger().info(f"ranges -> { ranges.shape[0]} type - >{ type(ranges)}")
+
+        print(cart_arr)
+
+
+    def tf_callback(self, msg):
+        for i in msg.transforms:
+            if i.header.frame_id=='base_link':
+                if i.child_frame_id=='base_laser_front_link':
+                    print("\n tf static -> ",i)
+                    # assign the transforms object of base_link and base_laser_front_link to tf_static for further processing
+                    tf_static=i
+
+
+        
+
 
 
 def main(args=None):

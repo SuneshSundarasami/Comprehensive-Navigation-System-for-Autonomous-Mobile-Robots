@@ -16,9 +16,6 @@ class PotentialFieldMappingModel(Node):
     def __init__(self):
         super().__init__('PotentialFieldMappingModel_node')
 
-        self.target={'x':1.5,
-                     'y':-3.5,
-                     'theta':2}
         
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
@@ -121,6 +118,11 @@ class PotentialFieldMappingModel(Node):
 
         goal_position= np.array([self.__goal['x'],self.__goal['y']])
 
+        print(np.linalg.norm(self.current_position-goal_position))
+
+        if np.linalg.norm(self.current_position-goal_position)< 0.5:
+            self.goal_allign(ak)
+
 
         self.v_attraction= - (self.__ka)*  (self.current_position-goal_position) /  np.linalg.norm(self.current_position-goal_position)
 
@@ -198,8 +200,24 @@ class PotentialFieldMappingModel(Node):
 
 
 
+    def goal_allign(self,z_angle):
+
+        self.publisher.publish(Twist())
 
         
+
+        if np.abs(z_angle- self.__goal['theta'])>0.05:
+            self.get_logger().info("Goal Position Reached! Alligning orientation.............................")
+            twist=Twist()
+            twist.angular.z=1.0
+            self.publisher.publish(twist)
+            time.sleep(0.1)
+
+        else:
+            self.get_logger().info(f"Goal to be reached x:{self.__goal['x']}, y:{self.__goal['y']}, theta:{self.__goal['theta']}")
+            self.get_logger().info(f"Goal Position Reached! Alligned orientation! x:{self.current_position[0]}, y:{self.current_position[1]}, theta:{z_angle}")
+            self.get_logger().info('Shutting down the node...')
+            rclpy.shutdown()  
 
 
 

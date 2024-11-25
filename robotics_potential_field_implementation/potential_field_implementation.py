@@ -48,21 +48,41 @@ class PotentialFieldMappingModel(Node):
         self.__ka= 1
 
 
+    #     self.tf_buffer = tf2_ros.Buffer()
+    #     self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+
+    #     self.timer = self.create_timer(5.0, self.list_transforms)  # Every 5 seconds
+
+    # def list_transforms(self):
+    #     try:
+    #         # Get all transformations as a string
+    #         transforms_str = self.tf_buffer.all_frames_as_string()
+    #         if transforms_str:
+    #             self.get_logger().info(f"Available Transformations:\n{transforms_str}")
+    #         else:
+    #             self.get_logger().info("No transformations available.")
+    #     except Exception as e:
+    #         self.get_logger().error(f"Error listing transformations: {e}")
+
+
+
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+        self.create_timer(0.01, self.retrieve_transform)
+        self.transform_matrix = None
 
-        self.timer = self.create_timer(5.0, self.list_transforms)  # Every 5 seconds
-
-    def list_transforms(self):
+    def retrieve_transform(self):
         try:
-            # Get all transformations as a string
-            transforms_str = self.tf_buffer.all_frames_as_string()
-            if transforms_str:
-                self.get_logger().info(f"Available Transformations:\n{transforms_str}")
-            else:
-                self.get_logger().info("No transformations available.")
+            transform = self.tf_buffer.lookup_transform('odom', 'base_laser_front_link', rclpy.time.Time())
+            t, q = transform.transform.translation, transform.transform.rotation
+
+            # Build 4x4 transformation matrix
+            self.transform_matrix = tf_transformations.quaternion_matrix([q.x, q.y, q.z, q.w])
+            self.transform_matrix[0:3, 3] = [t.x, t.y, t.z]
+
+            self.get_logger().info(f"Transformation Matrix:\n{self.transform_matrix}")
         except Exception as e:
-            self.get_logger().error(f"Error listing transformations: {e}")
+            self.get_logger().error(f"Transform error: {e}")
 
 
 

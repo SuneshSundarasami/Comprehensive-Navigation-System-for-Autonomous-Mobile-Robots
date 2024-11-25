@@ -41,11 +41,11 @@ class PotentialFieldMappingModel(Node):
 
 
         self.publisher = self.create_publisher(Twist, '/cmd_vel', 10)
-        # self.odom_subscription = self.create_subscription(
-        #     Odometry,
-        #     '/odom',  
-        #     self.odom_callback,
-        #     10)
+        self.odom_subscription = self.create_subscription(
+            Odometry,
+            '/odom',  
+            self.odom_callback,
+            10)
         
         self.scan_subscription = self.create_subscription(
             LaserScan,
@@ -62,6 +62,14 @@ class PotentialFieldMappingModel(Node):
         }
 
         self.__ka= 1
+
+        self.__kr= 1
+
+        self.__distance_threshold= 3
+
+        self.current_position=np.array([np.inf,np.inf])
+
+        self.v_repulsion= np.zeros((2,))
 
 
     #     self.tf_buffer = tf2_ros.Buffer()
@@ -103,12 +111,12 @@ class PotentialFieldMappingModel(Node):
         self.get_logger().info(f"Robot Position: x={current_x}, y={current_y}, theta={ak}")
         self.get_logger().info(f"Robot Orientation: row={ai}, pitch={aj}, yaw={ak}")
 
-        current_position=np.array([current_x,current_y])
+        self.current_position=np.array([current_x,current_y])
 
         goal_position= np.array([self.__goal['x'],self.__goal['y']])
 
 
-        v_attraction= - (self.__ka)*  (current_position-goal_position) /  np.linalg.norm(current_position-goal_position)
+        v_attraction= - (self.__ka)*  (self.current_position-goal_position) /  np.linalg.norm(self.current_position-goal_position)
 
 
         self.get_logger().info(f"Attraction velocities: v_attraction:{ v_attraction} v_attraction_x={v_attraction[0]}, v_attraction_y={v_attraction[1]}")
@@ -145,10 +153,31 @@ class PotentialFieldMappingModel(Node):
         # Removed inf points
         obst_coords = tranformed_arr[~np.isinf(tranformed_arr).any(axis=1)]
 
-        obst_coords=obst_coords[:,:2]
+        obst_coords=np.array(obst_coords[:,:2])
 
 
         self.get_logger().info(f"Obstacle Co-ordinates(odom) -> { obst_coords} ")
+
+        self.v_repulsion= np.zeros((2,))
+
+        for obst_coord in obst_coords:
+
+            if np.linalg.norm(self.current_position-obst_coord)<self.__distance_threshold:
+
+                v_repulsion_i=  (self.__kr)*  ( (1 /  np.linalg.norm(self.current_position-obst_coord))- (1/self.__distance_threshold)) * ((self.current_position-obst_coord)/ ((np.linalg.norm(self.current_position-obst_coord))**3) )
+                self.get_logger().info(f"Replusive velocities -> { v_repulsion_i} ")
+
+                self.v_repulsion+=v_repulsion_i
+                self.get_logger().info(f"Replusive velocities(total) -> { self.v_repulsion} ")
+
+        twist=Twist()
+        if (self.v_repulsion[0]==np.nan) or (self.v_repulsion[1]==np.nan):
+            self.v_repulsion=np.zeros((2,))
+        twist.linear.x=self.v_repulsion[0]
+        twist.linear.y=self.v_repulsion[1]
+        self.publisher.publish(twist)
+
+
 
 
 

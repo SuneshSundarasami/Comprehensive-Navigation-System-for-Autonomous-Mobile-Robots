@@ -19,6 +19,27 @@ class PotentialFieldMappingModel(Node):
         self.target={'x':1.5,
                      'y':-3.5,
                      'theta':2}
+        
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+        self.create_timer(0.01, self.retrieve_transform)
+        self.transform_matrix = np.eye(4)
+
+    def retrieve_transform(self):
+        try:
+            transform = self.tf_buffer.lookup_transform('odom', 'base_laser_front_link', rclpy.time.Time())
+            t, q = transform.transform.translation, transform.transform.rotation
+
+            # Build 4x4 transformation matrix
+            self.transform_matrix = tf_transformations.quaternion_matrix([q.x, q.y, q.z, q.w])
+            self.transform_matrix[0:3, 3] = [t.x, t.y, t.z]
+
+            # self.get_logger().info(f"Transformation Matrix:\n{self.transform_matrix}")
+        except Exception as e:
+            self.get_logger().error(f"Transform error: {e}")
+
+
+
         self.publisher = self.create_publisher(Twist, '/cmd_vel', 10)
         # self.odom_subscription = self.create_subscription(
         #     Odometry,
@@ -26,18 +47,13 @@ class PotentialFieldMappingModel(Node):
         #     self.odom_callback,
         #     10)
         
-        # self.scan_subscription = self.create_subscription(
-        #     LaserScan,
-        #     '/scan',  
-        #     self.scan_callback,
-        #     10)
+        self.scan_subscription = self.create_subscription(
+            LaserScan,
+            '/scan',  
+            self.scan_callback,
+            10)
         
-        # self.tf_subscription = self.create_subscription(
-        #     TFMessage,  
-        #     '/tf_static', 
-        #     self.tf_callback,
-        #     10  
-        # )
+
         
         self.__goal={
             "x":4.0,
@@ -66,23 +82,7 @@ class PotentialFieldMappingModel(Node):
 
 
 
-        self.tf_buffer = tf2_ros.Buffer()
-        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
-        self.create_timer(0.01, self.retrieve_transform)
-        self.transform_matrix = None
 
-    def retrieve_transform(self):
-        try:
-            transform = self.tf_buffer.lookup_transform('odom', 'base_laser_front_link', rclpy.time.Time())
-            t, q = transform.transform.translation, transform.transform.rotation
-
-            # Build 4x4 transformation matrix
-            self.transform_matrix = tf_transformations.quaternion_matrix([q.x, q.y, q.z, q.w])
-            self.transform_matrix[0:3, 3] = [t.x, t.y, t.z]
-
-            self.get_logger().info(f"Transformation Matrix:\n{self.transform_matrix}")
-        except Exception as e:
-            self.get_logger().error(f"Transform error: {e}")
 
 
 
@@ -124,8 +124,8 @@ class PotentialFieldMappingModel(Node):
     def scan_callback(self, msg):
         angleArr = np.arange(msg.angle_min, msg.angle_max, msg.angle_increment)
         ranges = np.array(msg.ranges)
-        self.get_logger().info(f"size of angle Arr: {angleArr.shape[0]}")
-        self.get_logger().info(f"ranges -> { ranges.shape[0]} type - >{ type(ranges)}")
+        # self.get_logger().info(f"size of angle Arr: {angleArr.shape[0]}")
+        # self.get_logger().info(f"ranges -> { ranges.shape[0]} type - >{ type(ranges)}")
 
         np_polar=np.stack([angleArr,ranges],axis=1)
 
@@ -134,18 +134,24 @@ class PotentialFieldMappingModel(Node):
         # below code to be defined in func np_polar2cart - converts polar to cartesian
         cart_arr = np.array([[np.cos(i[0])*i[1], np.sin(i[0])*i[1]] for i in np_polar])
 
-        self.get_logger().info(f"ranges -> { ranges.shape[0]} type - >{ type(ranges)}")
-
-        print(cart_arr)
+        # self.get_logger().info(f"ranges -> { ranges.shape[0]} type - >{ type(ranges)}")
 
 
-    def tf_callback(self, msg):
-        for i in msg.transforms:
-            if i.header.frame_id=='base_link':
-                if i.child_frame_id=='base_laser_front_link':
-                    print("\n tf static -> ",i)
-                    # assign the transforms object of base_link and base_laser_front_link to tf_static for further processing
-                    tf_static=i
+        cart_arr_with_z = np.hstack((cart_arr,np.zeros((cart_arr.shape[0],1)), np.ones((cart_arr.shape[0],1))))
+        cart_arr_transpose = np.transpose(cart_arr_with_z)
+        #new_rotation_matrix = Rotational matrix * laser scan data
+        tranformed_arr = (self.transform_matrix  @ cart_arr_transpose).T
+
+        # Removed inf points
+        obst_coords = tranformed_arr[~np.isinf(tranformed_arr).any(axis=1)]
+
+        obst_coords=obst_coords[:,:2]
+
+
+        self.get_logger().info(f"Obstacle Co-ordinates(odom) -> { obst_coords} ")
+
+
+
 
 
         

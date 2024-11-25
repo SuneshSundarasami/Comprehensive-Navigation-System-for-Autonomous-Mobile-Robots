@@ -61,15 +61,21 @@ class PotentialFieldMappingModel(Node):
             "theta":-1.0
         }
 
-        self.__ka= 1
+        self.__ka= 0.5
 
-        self.__kr= 1
+        self.__kr= 1.5
 
-        self.__distance_threshold= 3
+        self.__distance_threshold= 2
 
         self.current_position=np.array([np.inf,np.inf])
 
+        self.v_attraction= np.zeros((2,))
+
         self.v_repulsion= np.zeros((2,))
+
+
+
+
 
 
     #     self.tf_buffer = tf2_ros.Buffer()
@@ -109,23 +115,23 @@ class PotentialFieldMappingModel(Node):
                                          ,current_orientation.z,current_orientation.w])
         
         self.get_logger().info(f"Robot Position: x={current_x}, y={current_y}, theta={ak}")
-        self.get_logger().info(f"Robot Orientation: row={ai}, pitch={aj}, yaw={ak}")
+        # self.get_logger().info(f"Robot Orientation: row={ai}, pitch={aj}, yaw={ak}")
 
         self.current_position=np.array([current_x,current_y])
 
         goal_position= np.array([self.__goal['x'],self.__goal['y']])
 
 
-        v_attraction= - (self.__ka)*  (self.current_position-goal_position) /  np.linalg.norm(self.current_position-goal_position)
+        self.v_attraction= - (self.__ka)*  (self.current_position-goal_position) /  np.linalg.norm(self.current_position-goal_position)
 
 
-        self.get_logger().info(f"Attraction velocities: v_attraction:{ v_attraction} v_attraction_x={v_attraction[0]}, v_attraction_y={v_attraction[1]}")
+        self.get_logger().info(f"Attraction velocities: v_attraction_x={self.v_attraction[0]}, v_attraction_y={self.v_attraction[1]}")
 
 
 
         twist=Twist()
-        twist.linear.x=v_attraction[0]
-        twist.linear.y=v_attraction[1]
+        twist.linear.x=self.v_attraction[0]
+        twist.linear.y=self.v_attraction[1]
         # self.publisher.publish(twist)
 
 
@@ -156,7 +162,7 @@ class PotentialFieldMappingModel(Node):
         obst_coords=np.array(obst_coords[:,:2])
 
 
-        self.get_logger().info(f"Obstacle Co-ordinates(odom) -> { obst_coords} ")
+        # self.get_logger().info(f"Obstacle Co-ordinates(odom) -> { obst_coords} ")
 
         self.v_repulsion= np.zeros((2,))
 
@@ -165,20 +171,30 @@ class PotentialFieldMappingModel(Node):
             if np.linalg.norm(self.current_position-obst_coord)<self.__distance_threshold:
 
                 v_repulsion_i=  (self.__kr)*  ( (1 /  np.linalg.norm(self.current_position-obst_coord))- (1/self.__distance_threshold)) * ((self.current_position-obst_coord)/ ((np.linalg.norm(self.current_position-obst_coord))**3) )
-                self.get_logger().info(f"Replusive velocities -> { v_repulsion_i} ")
+                # self.get_logger().info(f"Replusive velocities -> { v_repulsion_i} ")
 
                 self.v_repulsion+=v_repulsion_i
-                self.get_logger().info(f"Replusive velocities(total) -> { self.v_repulsion} ")
+                # self.get_logger().info(f"Replusive velocities(total) -> { self.v_repulsion} ")
 
+        self.get_logger().info(f"Replusion velocities: v_repulsion_x={self.v_repulsion[0]}, v_repulsion_y={self.v_repulsion[1]}")
         twist=Twist()
         if (self.v_repulsion[0]==np.nan) or (self.v_repulsion[1]==np.nan):
             self.v_repulsion=np.zeros((2,))
         twist.linear.x=self.v_repulsion[0]
         twist.linear.y=self.v_repulsion[1]
+
+        self.v_total=self.v_attraction+ self.v_repulsion
+        # self.v_total=self.v_attraction
+
+        self.get_logger().info(f"Final velocity Update: v_total_x={self.v_total[0]}, v_total_y={self.v_total[1]}")
+
+
+
+
+        twist=Twist()
+        twist.linear.x=self.v_total[0]
+        twist.linear.y=self.v_total[1]
         self.publisher.publish(twist)
-
-
-
 
 
 

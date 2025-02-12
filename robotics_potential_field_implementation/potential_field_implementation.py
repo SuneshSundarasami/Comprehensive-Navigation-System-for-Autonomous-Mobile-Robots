@@ -11,17 +11,23 @@ import tf_transformations
 from geometry_msgs.msg import Twist
 import numpy as np
 import tf2_ros
+from geometry_msgs.msg import Pose2D
 
 class PotentialFieldMappingModel(Node):
     def __init__(self):
         super().__init__('PotentialFieldMappingModel_node')
 
-        
+        self.current_orientation=None
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
-        self.create_timer(0.01, self.retrieve_transform)
-        self.transform_matrix = np.eye(4)
+        self.create_timer(0.001, self.retrieve_transform)
 
+        
+
+        
+
+    
+    
     def retrieve_transform(self):
         try:
             transform = self.tf_buffer.lookup_transform('odom', 'base_laser_front_link', rclpy.time.Time())
@@ -31,11 +37,18 @@ class PotentialFieldMappingModel(Node):
             self.transform_matrix = tf_transformations.quaternion_matrix([q.x, q.y, q.z, q.w])
             self.transform_matrix[0:3, 3] = [t.x, t.y, t.z]
 
-            # self.get_logger().info(f"Transformation Matrix:\n{self.transform_matrix}")
+
         except Exception as e:
             self.get_logger().error(f"Transform error: {e}")
 
-
+        self.transform_matrix = np.eye(4)
+        self.log_counter=0
+        self.goal_subscription = self.create_subscription(
+            Pose2D,
+            'end_pose',  # Topic name
+            self.goal_callback,
+            10
+        )
 
         self.publisher = self.create_publisher(Twist, '/cmd_vel', 10)
         self.odom_subscription = self.create_subscription(
@@ -53,16 +66,16 @@ class PotentialFieldMappingModel(Node):
 
         
         self.__goal={
-            "x":4,
-            "y":10,
+            "x":0,
+            "y":0,
             "theta":3
         }
 
         self.__ka= 0.7
 
-        self.__kr= 0.3
+        self.__kr= 5
 
-        self.__distance_threshold= 3
+        self.__distance_threshold= 5
 
         self.current_position=np.array([np.inf,np.inf])
 
@@ -70,32 +83,21 @@ class PotentialFieldMappingModel(Node):
 
         self.v_repulsion= np.zeros((2,))
 
-        self.current_orientation=None
+        self.__goal_pose_error=0.1
 
 
-
-
-    #     self.tf_buffer = tf2_ros.Buffer()
-    #     self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
-
-    #     self.timer = self.create_timer(5.0, self.list_transforms)  # Every 5 seconds
-
-    # def list_transforms(self):
-    #     try:
-    #         # Get all transformations as a string
-    #         transforms_str = self.tf_buffer.all_frames_as_string()
-    #         if transforms_str:
-    #             self.get_logger().info(f"Available Transformations:\n{transforms_str}")
-    #         else:
-    #             self.get_logger().info("No transformations available.")
-    #     except Exception as e:
-    #         self.get_logger().error(f"Error listing transformations: {e}")
+   
 
 
 
 
 
-
+    def goal_callback(self, msg):
+        self.__goal["x"] = msg.x
+        self.__goal["y"] = msg.y
+        self.__goal["theta"] = msg.theta
+        self.get_logger().info(f'Updated Goal: x={msg.x}, y={msg.y}, theta={msg.theta}')
+        
 
 
     def odom_callback(self, msg):
@@ -106,6 +108,8 @@ class PotentialFieldMappingModel(Node):
         current_orientation = msg.pose.pose.orientation
 
         self.current_orientation=current_orientation
+
+        # self.get_logger().info(f"Robot Position: {self.current_orientation}")
 
         # self.get_logger().info(f"Robot Position: x={current_x}, y={current_y}, z={current_z}")
         # self.get_logger().info(f"Robot Orientation: x={current_orientation.x}, y={current_orientation.y}, z={current_orientation.z}, w={current_orientation.w}")
@@ -120,16 +124,16 @@ class PotentialFieldMappingModel(Node):
 
         goal_position= np.array([self.__goal['x'],self.__goal['y']])
 
-        self.get_logger().info(f"distance to the goal ----------------------------------------------{np.linalg.norm(self.current_position-goal_position)}->>>>>>>")
+        # self.get_logger().info(f"distance to the goal ----------------------------------------------{np.linalg.norm(self.current_position-goal_position)}->>>>>>>")
 
-        if np.linalg.norm(self.current_position-goal_position)< 0.5:
+        if np.linalg.norm(self.current_position-goal_position)< self.__goal_pose_error:
             self.goal_allign(ak)
 
 
         self.v_attraction= - (self.__ka)*  (self.current_position-goal_position) /  np.linalg.norm(self.current_position-goal_position)
 
 
-        self.get_logger().info(f"Attraction velocities: v_attraction_x={self.v_attraction[0]}, v_attraction_y={self.v_attraction[1]}")
+        # self.get_logger().info(f"Attraction velocities: v_attraction_x={self.v_attraction[0]}, v_attraction_y={self.v_attraction[1]}")
 
 
 
@@ -148,7 +152,7 @@ class PotentialFieldMappingModel(Node):
         # self.get_logger().info(f"size of angle Arr: {angleArr.shape[0]}")
         # self.get_logger().info(f"ranges -> { ranges.shape[0]} type - >{ type(ranges)}")
 
-        print(angleArr.shape,ranges.shape)
+        # print(angleArr.shape,ranges.shape)
         np_polar=np.stack([angleArr,ranges],axis=1)
 
 
@@ -184,7 +188,7 @@ class PotentialFieldMappingModel(Node):
                 self.v_repulsion+=v_repulsion_i
                 # self.get_logger().info(f"Replusive velocities(total) -> { self.v_repulsion} ")
 
-        self.get_logger().info(f"Replusion velocities: v_repulsion_x={self.v_repulsion[0]}, v_repulsion_y={self.v_repulsion[1]}")
+        # self.get_logger().info(f"Replusion velocities: v_repulsion_x={self.v_repulsion[0]}, v_repulsion_y={self.v_repulsion[1]}")
         twist=Twist()
         if (self.v_repulsion[0]==np.nan) or (self.v_repulsion[1]==np.nan):
             self.v_repulsion=np.zeros((2,))
@@ -194,11 +198,22 @@ class PotentialFieldMappingModel(Node):
         self.v_total=self.v_attraction+ self.v_repulsion
         # self.v_total=self.v_attraction
 
-        self.get_logger().info(f"Final velocity Update: v_total_x={self.v_total[0]}, v_total_y={self.v_total[1]}")
+        self.log_counter+=1
+        # print(self.log_counter)
+
+        log_now=self.log_counter%20==0
+
+        if log_now:
+
+            self.get_logger().info(f"Final velocity Update: v_total_x={self.v_total[0]}, v_total_y={self.v_total[1]}")
 
         v_total_magnitude = np.linalg.norm(self.v_total)  # Magnitude of total velocity
         v_total_angle = math.atan2(self.v_total[1], self.v_total[0])  # Angle of total velocity
 
+
+        if log_now:
+            self.get_logger().info(f"Velocity magnitude: {v_total_magnitude}, Velocity angle: {v_total_angle}")
+        # self.get_logger().info(f"Robot Position: {self.current_orientation}")
         # Calculate angular velocity (wz) based on heading difference
         current_heading = tf_transformations.euler_from_quaternion([self.current_orientation.x, 
                                                                      self.current_orientation.y, 
@@ -209,12 +224,16 @@ class PotentialFieldMappingModel(Node):
         # Normalize heading difference to [-pi, pi]
         heading_difference = math.atan2(math.sin(heading_difference), math.cos(heading_difference))
 
+        max_vel=0.25
         # Forward velocity and angular velocity
         twist = Twist()
-        twist.linear.x = min(v_total_magnitude, 1.0)  # Cap forward velocity to a maximum of 1.0
-        twist.angular.z = 1 * heading_difference  # Proportional control for angular velocity
+        twist.linear.x = min(v_total_magnitude, max_vel)  # Cap forward velocity to a maximum of 1.0
+        twist.angular.z = max_vel if heading_difference > max_vel else (-max_vel if heading_difference < -max_vel else heading_difference)
+        # min(1 * heading_difference, 0.5)    # Proportional control for angular velocity
 
-        self.get_logger().info(f"Final velocity applied: linear_x={twist.linear.x}, angular_z={twist.angular.z}")
+        if log_now:
+            self.get_logger().info(f"Final velocity calculated: linear_x={v_total_magnitude}, angular_z={heading_difference}")
+            self.get_logger().info(f"Final velocity applied: linear_x={twist.linear.x}, angular_z={twist.angular.z}")
 
         self.publisher.publish(twist)
 
@@ -226,7 +245,7 @@ class PotentialFieldMappingModel(Node):
 
         
 
-        if np.abs(z_angle- self.__goal['theta'])>0.05:
+        if np.abs(z_angle- self.__goal['theta'])>self.__goal_pose_error:
             self.get_logger().info("Goal Position Reached! Alligning orientation.............................")
             twist=Twist()
             twist.angular.z=-0.7

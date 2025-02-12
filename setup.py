@@ -21,6 +21,7 @@ setup(
     entry_points={
         'console_scripts': [
             f'pfieldmodel = {package_name}.potential_field_implementation:main',
+            f'endpose = {package_name}.end_pose_publisher:main',
         ],
     },
 )

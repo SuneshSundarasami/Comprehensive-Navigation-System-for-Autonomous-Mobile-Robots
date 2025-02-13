@@ -1,6 +1,7 @@
 from setuptools import find_packages, setup
 
-package_name = 'robotics_potential_field_implementation'
+package_name = 'amr_project_amr_t04'
+module_name='motion_and_path_planning'
 
 setup(
     name=package_name,
@@ -20,8 +21,8 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            f'pfieldmodel = {package_name}.potential_field_implementation:main',
-            f'endpose = {package_name}.end_pose_publisher:main',
+            f'pfieldmodel = {module_name}.potential_field_implementation:main',
+            f'endpose = {module_name}.end_pose_publisher:main',
         ],
     },
 )

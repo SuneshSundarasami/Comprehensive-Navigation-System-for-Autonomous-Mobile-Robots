@@ -1,0 +1,67 @@
+{
+    "child": {
+        "child1": {
+            "child1": {
+                "directory": "\/home\/sunesh",
+                "height": 506,
+                "profile": "2b7c4080-0ddd-46c5-8f23-563fd3ba789d",
+                "readOnly": false,
+                "synchronizedInput": true,
+                "type": "Terminal",
+                "uuid": "ec61ec0f-e948-416d-8723-09c33ad0cf10",
+                "width": 924
+            },
+            "child2": {
+                "directory": "\/home\/sunesh\/ros2_ws",
+                "height": 505,
+                "profile": "2b7c4080-0ddd-46c5-8f23-563fd3ba789d",
+                "readOnly": false,
+                "synchronizedInput": true,
+                "type": "Terminal",
+                "uuid": "f41aced8-a1ab-4a20-b66c-533dc9734a2f",
+                "width": 924
+            },
+            "orientation": 1,
+            "position": 50,
+            "ratio": 0.5,
+            "type": "Paned"
+        },
+        "child2": {
+            "child1": {
+                "directory": "\/home\/sunesh\/ros2_ws\/src\/amr_project_amr_t04",
+                "height": 506,
+                "profile": "2b7c4080-0ddd-46c5-8f23-563fd3ba789d",
+                "readOnly": false,
+                "synchronizedInput": true,
+                "type": "Terminal",
+                "uuid": "15275dad-a701-4ed3-9692-d692be6f4def",
+                "width": 923
+            },
+            "child2": {
+                "directory": "\/home\/sunesh\/ros2_ws\/src\/amr_project_amr_t04",
+                "height": 505,
+                "profile": "2b7c4080-0ddd-46c5-8f23-563fd3ba789d",
+                "readOnly": false,
+                "synchronizedInput": true,
+                "type": "Terminal",
+                "uuid": "34cd1779-523f-4c11-843d-6abfd12db744",
+                "width": 923
+            },
+            "orientation": 1,
+            "position": 50,
+            "ratio": 0.5,
+            "type": "Paned"
+        },
+        "orientation": 0,
+        "position": 50,
+        "ratio": 0.5,
+        "type": "Paned"
+    },
+    "height": 1012,
+    "name": "${title}",
+    "synchronizedInput": false,
+    "type": "Session",
+    "uuid": "0c9512e8-c8bf-4ab7-b1b9-f8b14c9e565b",
+    "version": "1.0",
+    "width": 1848
+}

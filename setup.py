@@ -15,7 +15,7 @@ setup(
     install_requires=['setuptools'],
     zip_safe=True,
     maintainer='sunesh',
-    maintainer_email='suneshr7@gmail.com',
+    maintainer_email='sunesh@outlook.de',
     description='TODO: Package description',
     license='TODO: License declaration',
     tests_require=['pytest'],
@@ -23,6 +23,7 @@ setup(
         'console_scripts': [
             f'pfieldmodel = {module_name}.potential_field_implementation:main',
             f'endpose = {module_name}.end_pose_publisher:main',
+            f'astar = {module_name}.a_star_path_planner:main',
         ],
     },
 )

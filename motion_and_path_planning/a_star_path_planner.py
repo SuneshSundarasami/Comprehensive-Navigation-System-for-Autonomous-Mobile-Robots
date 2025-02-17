@@ -162,6 +162,47 @@ class AStarPathPlanner(Node):
         y = gy * self.map_info.resolution + self.map_info.origin.position.y
         return x, y
 
+
+
+
+    def extract_turns(self, path_grid, angle_threshold=30, distance_threshold=1.0):
+        """Extracts key waypoints (turns) from the path based on significant direction changes and distance."""
+        key_points = []
+        
+        if len(path_grid) < 3:
+            return path_grid  # Return the path as is if there are fewer than 3 points
+        
+        # Convert path to NumPy array for easier manipulation
+        path_grid = np.array(path_grid)
+        
+        # Add the first point as a starting point
+        key_points.append(tuple(path_grid[0]))
+
+        # Calculate the differences between consecutive points (x, y)
+        diffs = np.diff(path_grid, axis=0)
+        
+        # Calculate the angles of each segment in degrees
+        angles = np.degrees(np.arctan2(diffs[:, 1], diffs[:, 0]))
+
+        # Check for significant turns (angle difference above the threshold)
+        for i in range(1, len(angles)):
+            angle_diff = abs(angles[i] - angles[i - 1])
+            angle_diff = np.mod(angle_diff + 180, 360) - 180  # Wrap angle difference to [-180, 180]
+            
+            # Calculate the distance between consecutive points
+            distance = np.linalg.norm(path_grid[i] - path_grid[i - 1])
+            
+            # If the angle difference exceeds the threshold and the distance is large enough, it's a turn
+            if abs(angle_diff) > angle_threshold and distance > distance_threshold:
+                key_points.append(tuple(path_grid[i]))
+
+        # Add the last point as the endpoint
+        key_points.append(tuple(path_grid[-1]))
+        
+        return key_points
+
+
+    
     def plan_path(self):
         """Plans a path using A* with precomputed clearance."""
         if self.current_pose is None or not self.map_processed:
@@ -182,11 +223,13 @@ class AStarPathPlanner(Node):
             self.get_logger().warn('No path found!')
             return
 
+        important_path = self.extract_turns(path_grid)
+        self.get_logger().info(f'Intial paths: {len(path_grid)} : Extracted paths:{len(important_path)}')
         path_msg = Path()
         path_msg.header.frame_id = 'odom'
         path_msg.header.stamp = self.get_clock().now().to_msg()
 
-        for x, y in path_grid:
+        for x, y in important_path:
             world_x, world_y = self.grid_to_world(x, y)
             pose = PoseStamped()
             pose.pose.position.x = world_x

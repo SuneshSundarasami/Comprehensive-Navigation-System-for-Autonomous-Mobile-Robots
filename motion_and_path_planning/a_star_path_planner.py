@@ -27,7 +27,7 @@ class AStarPathPlanner(Node):
         self.map_data = None
         self.map_info = None
         self.current_pose = None
-        self.end_pose = (6, 0)  # Goal in world coordinates
+        self.end_pose = (0, 0)  # Goal in world coordinates
         self.graph = None
         self.clearance_map = None
         self.map_processed = False  # Flag to ensure map is only processed once

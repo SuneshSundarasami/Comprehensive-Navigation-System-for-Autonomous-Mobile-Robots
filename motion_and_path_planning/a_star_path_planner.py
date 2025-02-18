@@ -10,6 +10,8 @@ import networkx as nx
 from scipy.ndimage import distance_transform_edt
 import cv2
 from cv_bridge import CvBridge
+import tf_transformations
+from geometry_msgs.msg import Quaternion
 from sensor_msgs.msg import Image
 
 class AStarPathPlanner(Node):
@@ -25,7 +27,7 @@ class AStarPathPlanner(Node):
         self.map_data = None
         self.map_info = None
         self.current_pose = None
-        self.end_pose = (4, -4)  # Goal in world coordinates
+        self.end_pose = (6, 0)  # Goal in world coordinates
         self.graph = None
         self.clearance_map = None
         self.map_processed = False  # Flag to ensure map is only processed once
@@ -107,7 +109,7 @@ class AStarPathPlanner(Node):
 
 
 
-    def create_graph(self, raw_map, obstacle_radius=3):
+    def create_graph(self, raw_map, obstacle_radius=5):
         """Creates a weighted graph representation of the grid map for A* with wider obstacles."""
         height, width = raw_map.shape
         G = nx.grid_2d_graph(width, height)
@@ -201,7 +203,26 @@ class AStarPathPlanner(Node):
         
         return key_points
 
+    def compute_waypoints(self, important_path):
+        """Computes (x, y, θ) for the extracted path corners."""
+        waypoints = []
 
+        for i in range(len(important_path)):
+            x, y = important_path[i]
+            world_x, world_y = self.grid_to_world(x, y)
+
+            if i < len(important_path) - 1:
+                # Compute heading angle θ from current point to the next point
+                next_x, next_y = important_path[i + 1]
+                next_world_x, next_world_y = self.grid_to_world(next_x, next_y)
+                theta = np.arctan2(next_world_y - world_y, next_world_x - world_x)
+            else:
+                # Keep last point's orientation the same as previous
+                theta = waypoints[-1][2] if waypoints else 0.0
+
+            waypoints.append((world_x, world_y, theta))
+
+        return waypoints
     
     def plan_path(self):
         """Plans a path using A* with precomputed clearance."""
@@ -224,46 +245,35 @@ class AStarPathPlanner(Node):
             return
 
         important_path = self.extract_turns(path_grid)
-        self.get_logger().info(f'Intial paths: {len(path_grid)} : Extracted paths:{len(important_path)}')
+        self.get_logger().info(f'Initial paths: {len(path_grid)} | Extracted paths: {len(important_path)}')
+
+        waypoints = self.compute_waypoints(important_path)
         path_msg = Path()
         path_msg.header.frame_id = 'odom'
         path_msg.header.stamp = self.get_clock().now().to_msg()
 
-        for x, y in important_path:
-            world_x, world_y = self.grid_to_world(x, y)
+        for world_x, world_y, theta in waypoints:
             pose = PoseStamped()
             pose.pose.position.x = world_x
             pose.pose.position.y = world_y
             pose.pose.position.z = 0.0
-            pose.pose.orientation.w = 1.0
+            pose.pose.orientation = self.yaw_to_quaternion(theta)
             path_msg.poses.append(pose)
 
         self.path_pub.publish(path_msg)
         self.get_logger().info(f'Published path with {len(path_msg.poses)} poses')
 
+    def yaw_to_quaternion(self, yaw):
+        """Converts a yaw angle (theta) to a quaternion using tf transformations."""
+        quat = tf_transformations.quaternion_from_euler(0, 0, yaw)
+        return Quaternion(x=quat[0], y=quat[1], z=quat[2], w=quat[3])
+    
     def clearance_aware_heuristic(self, a, b):
         """A* heuristic that favors paths with higher clearance using a fast lookup."""
         euclidean_dist = np.sqrt((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2)
         clearance_factor = self.clearance_map[a[1], a[0]] 
         return euclidean_dist / (1.0 + (10**2) * clearance_factor)
     
-    # def publish_clearance_map(self):
-    #     """Publishes the precomputed clearance map as an OccupancyGrid message."""
-    #     if self.clearance_map is None:
-    #         self.get_logger().warn("Clearance map not available!")
-    #         return
-
-    #     max_clearance = np.max(self.clearance_map)
-    #     normalized_clearance = (self.clearance_map / max_clearance) * 100  # Scale to 0-100
-
-    #     clearance_msg = OccupancyGrid()
-    #     clearance_msg.header.frame_id = "map"
-    #     clearance_msg.header.stamp = self.get_clock().now().to_msg()
-    #     clearance_msg.info = self.map_info
-    #     clearance_msg.data = normalized_clearance.astype(np.int8).flatten().tolist()
-
-    #     self.clearance_pub.publish(clearance_msg)
-    #     self.get_logger().info(f'Clearance map published')
 
 
 

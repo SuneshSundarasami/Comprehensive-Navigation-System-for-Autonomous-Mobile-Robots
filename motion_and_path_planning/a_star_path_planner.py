@@ -18,6 +18,15 @@ class AStarPathPlanner(Node):
     def __init__(self):
         super().__init__('astar_path_planner')
 
+        self.declare_parameters(
+            namespace='',
+            parameters=[
+                ('end_pose.x', 0.0),
+                ('end_pose.y', 0.0),
+                ('end_pose.theta', 0.0)
+            ]
+        )
+
         self.map_sub = self.create_subscription(OccupancyGrid, '/map', self.map_callback, 10)
         self.odom_sub = self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
         self.path_pub = self.create_publisher(Path, '/planned_path', 10)
@@ -27,7 +36,10 @@ class AStarPathPlanner(Node):
         self.map_data = None
         self.map_info = None
         self.current_pose = None
-        self.end_pose = (0, 0)  # Goal in world coordinates
+        self.end_pose = (
+            self.get_parameter('end_pose.x').value,
+            self.get_parameter('end_pose.y').value
+        )
         self.graph = None
         self.clearance_map = None
         self.map_processed = False  # Flag to ensure map is only processed once

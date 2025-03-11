@@ -4,6 +4,7 @@ import os
 
 package_name = 'amr_project_amr_t04'
 module_name = 'motion_and_path_planning'
+exploration_module = 'environment_exploration'
 
 setup(
     name=package_name,
@@ -29,6 +30,8 @@ setup(
             f'astar = {module_name}.a_star_path_planner:main',
             f'pose_exec = {module_name}.pose_execuetor:main',
             f'path_vis = {module_name}.path_visualizer:main',
+            # Add frontier explorer entry point
+            f'frontier_explorer = {exploration_module}.frontier_explorer:main',
         ],
     },
 )

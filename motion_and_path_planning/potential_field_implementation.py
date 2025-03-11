@@ -255,12 +255,12 @@ class PotentialFieldMappingModel(Node):
         # Normalize heading difference to [-pi, pi]
         heading_difference = math.atan2(math.sin(heading_difference), math.cos(heading_difference))
 
-        max_vel=0.25
+        max_vel=0.1
         # Forward velocity and angular velocity
 
         # twist.linear.x=if twist.linear.x
         if np.linalg.norm(self.current_position-self.goal_position)<0.5:
-            max_vel=0.1
+            max_vel=0.05
 
         twist = Twist()
         twist.linear.x,twist.angular.z =self.limit_velocities(v_total_magnitude,heading_difference,max_vel)
@@ -310,7 +310,7 @@ class PotentialFieldMappingModel(Node):
             self.pfield_status="Goal Position Reached! Alligning orientation!"
             self.get_logger().info(f"Goal Position Reached! Alligning orientation.... | Angle diff:{(z_angle- self.__goal['theta'])}")
             twist=Twist()
-            twist.angular.z=0.7 if (z_angle- self.__goal['theta'])<0 else -0.7
+            twist.angular.z=0.1 if (z_angle- self.__goal['theta'])<0 else -0.1
             self.publisher.publish(twist)
             time.sleep(0.1)
 

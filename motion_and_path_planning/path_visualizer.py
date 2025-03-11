@@ -42,7 +42,7 @@ class PathVisualizer(Node):
             marker_array.markers.append(marker)
 
         self.marker_pub.publish(marker_array)
-        self.get_logger().info(f'Published {len(marker_array.markers)} markers to RViz')
+        # self.get_logger().info(f'Published {len(marker_array.markers)} markers to RViz')
 
 def main(args=None):
     rclpy.init(args=args)

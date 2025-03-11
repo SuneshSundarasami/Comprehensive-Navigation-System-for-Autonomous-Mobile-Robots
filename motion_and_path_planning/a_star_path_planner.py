@@ -109,7 +109,7 @@ class AStarPathPlanner(Node):
 
 
 
-    def create_graph(self, raw_map, obstacle_radius=5):
+    def create_graph(self, raw_map, obstacle_radius=1):
         """Creates a weighted graph representation of the grid map for A* with wider obstacles."""
         height, width = raw_map.shape
         G = nx.grid_2d_graph(width, height)
@@ -124,13 +124,13 @@ class AStarPathPlanner(Node):
                     if 0 <= neighbor[0] < width and 0 <= neighbor[1] < height:
                         if (neighbor not in G):  # Skip obstacles
                             continue
-                        G.add_edge((x, y), neighbor, weight=1) 
+                        G.add_edge((x, y), neighbor, weight=1.414)  # Diagonal cost
 
-        # Remove obstacles and add weights based on clearance
+        # Remove obstacles and unexplored areas
         for y in range(height):
             for x in range(width):
-                if raw_map[y, x] == 100:  # Obstacle
-                    # Remove the node and all neighboring nodes within the obstacle radius
+                if raw_map[y, x] == 100 or raw_map[y, x] == -1:  # Obstacle or unexplored
+                    # Remove the node and all neighboring nodes within the radius
                     for dx in range(-obstacle_radius, obstacle_radius + 1):
                         for dy in range(-obstacle_radius, obstacle_radius + 1):
                             nx_coord = x + dx
@@ -143,7 +143,7 @@ class AStarPathPlanner(Node):
                         clearance = self.clearance_map[y, x]
                         G.nodes[(x, y)]['weight'] = 1 / clearance
 
-        self.get_logger().info(f'Graph computed')
+        self.get_logger().info('Graph computed with unexplored areas removed')
         return G
 
     def odom_callback(self, msg):
@@ -232,10 +232,14 @@ class AStarPathPlanner(Node):
         start_grid = self.world_to_grid(*self.current_pose)
         end_grid = self.world_to_grid(*self.end_pose)
 
-        self.get_logger().info(f'Planning path from {start_grid} to {end_grid}')
+        # self.get_logger().info(f'Planning path from {start_grid} to {end_grid}')
 
-        if start_grid not in self.graph or end_grid not in self.graph:
-            self.get_logger().warn('Start or goal is in an invalid position!')
+        if start_grid not in self.graph :
+            self.get_logger().warn('Start is in an invalid position!')
+            return
+
+        if  end_grid not in self.graph:
+            self.get_logger().warn('Goal is in an invalid position!')
             return
 
         try:
@@ -245,7 +249,7 @@ class AStarPathPlanner(Node):
             return
 
         important_path = self.extract_turns(path_grid)
-        self.get_logger().info(f'Initial paths: {len(path_grid)} | Extracted paths: {len(important_path)}')
+        # self.get_logger().info(f'Initial paths: {len(path_grid)} | Extracted paths: {len(important_path)}')
 
         waypoints = self.compute_waypoints(important_path)
         path_msg = Path()
@@ -261,7 +265,7 @@ class AStarPathPlanner(Node):
             path_msg.poses.append(pose)
 
         self.path_pub.publish(path_msg)
-        self.get_logger().info(f'Published path with {len(path_msg.poses)} poses')
+        # self.get_logger().info(f'Published path with {len(path_msg.poses)} poses')
 
     def yaw_to_quaternion(self, yaw):
         """Converts a yaw angle (theta) to a quaternion using tf transformations."""

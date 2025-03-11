@@ -8,6 +8,8 @@ import tf2_ros
 from utils.visualization import FrontierVisualizer
 from utils.frontier_detector import FrontierDetector
 from utils.goal_selector import GoalSelector
+import subprocess
+import threading
 
 class FrontierExplorationNode(Node):
     def __init__(self):
@@ -15,6 +17,8 @@ class FrontierExplorationNode(Node):
         
         # Initialize parameters
         self._init_parameters()
+        self.process = None
+        self.process_lock = threading.Lock()
         
         # Create subscribers and publishers
         self.map_sub = self.create_subscription(
@@ -126,7 +130,7 @@ class FrontierExplorationNode(Node):
                 self.goal_publisher.publish(goal)
                 self.get_logger().info(
                     f'Published goal at ({goal.pose.position.x:.2f}, {goal.pose.position.y:.2f}) with score {score:.2f}')
-
+    
 def main(args=None):
     rclpy.init(args=args)
     node = FrontierExplorationNode()

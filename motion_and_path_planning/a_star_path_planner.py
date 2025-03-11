@@ -13,19 +13,13 @@ from cv_bridge import CvBridge
 import tf_transformations
 from geometry_msgs.msg import Quaternion
 from sensor_msgs.msg import Image
+from geometry_msgs.msg import Pose2D
 
 class AStarPathPlanner(Node):
     def __init__(self):
         super().__init__('astar_path_planner')
 
-        self.declare_parameters(
-            namespace='',
-            parameters=[
-                ('end_pose.x', 0.0),
-                ('end_pose.y', 0.0),
-                ('end_pose.theta', 0.0)
-            ]
-        )
+        self.goal_sub=self.create_subscription(Pose2D, '/end_pose',self.goal_sub_callback, 10)
 
         self.map_sub = self.create_subscription(OccupancyGrid, '/map', self.map_callback, 10)
         self.odom_sub = self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
@@ -36,15 +30,16 @@ class AStarPathPlanner(Node):
         self.map_data = None
         self.map_info = None
         self.current_pose = None
-        self.end_pose = (
-            self.get_parameter('end_pose.x').value,
-            self.get_parameter('end_pose.y').value
-        )
+        self.end_pose = (0, 0)  # Goal in world coordinates
         self.graph = None
         self.clearance_map = None
         self.map_processed = False  # Flag to ensure map is only processed once
 
         self.get_logger().info('A* Path Planner Node initialized')
+
+
+    def goal_sub_callback(self,msg):
+        self.end_pose = (msg.x, msg.y)
 
     def map_callback(self, msg):
         """Receives the map and constructs a graph for A*."""

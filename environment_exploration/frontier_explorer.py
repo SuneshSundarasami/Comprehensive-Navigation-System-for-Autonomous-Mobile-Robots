@@ -8,8 +8,7 @@ import tf2_ros
 from utils.visualization import FrontierVisualizer
 from utils.frontier_detector import FrontierDetector
 from utils.goal_selector import GoalSelector
-import subprocess
-import threading
+from geometry_msgs.msg import Pose2D
 
 class FrontierExplorationNode(Node):
     def __init__(self):
@@ -17,18 +16,17 @@ class FrontierExplorationNode(Node):
         
         # Initialize parameters
         self._init_parameters()
-        self.process = None
-        self.process_lock = threading.Lock()
         
         # Create subscribers and publishers
+
         self.map_sub = self.create_subscription(
             OccupancyGrid,
             'map',
             self.map_callback,
             10)
         self.goal_publisher = self.create_publisher(
-            PoseStamped, 
-            'goal', 
+            Pose2D, 
+            'end_pose', 
             10)
         self.visualization_pub = self.create_publisher(
             MarkerArray,
@@ -116,21 +114,19 @@ class FrontierExplorationNode(Node):
                 self.visualization_pub.publish(markers)
 
                 # Create and publish goal
-                goal = PoseStamped()
-                goal.header.frame_id = "map"
-                goal.header.stamp = self.get_clock().now().to_msg()
-                goal.pose.position.x = selected_centroid[1] * msg.info.resolution + msg.info.origin.position.x
-                goal.pose.position.y = selected_centroid[0] * msg.info.resolution + msg.info.origin.position.y
-                goal.pose.orientation.w = 1.0
+                goal = Pose2D()
+                goal.x = selected_centroid[1] * msg.info.resolution + msg.info.origin.position.x
+                goal.y = selected_centroid[0] * msg.info.resolution + msg.info.origin.position.y
+                goal.theta = 1.0
 
-                self.previous_goals.append([goal.pose.position.x, goal.pose.position.y])
+                self.previous_goals.append([goal.x, goal.y])
                 if len(self.previous_goals) > 10:
                     self.previous_goals.pop(0)
 
                 self.goal_publisher.publish(goal)
                 self.get_logger().info(
-                    f'Published goal at ({goal.pose.position.x:.2f}, {goal.pose.position.y:.2f}) with score {score:.2f}')
-    
+                    f'Published goal at ({goal.x:.2f}, {goal.y:.2f}) with score {score:.2f}')
+
 def main(args=None):
     rclpy.init(args=args)
     node = FrontierExplorationNode()

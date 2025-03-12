@@ -9,7 +9,7 @@ import numpy as np
 class FrontierVisualizer:
     def __init__(self):
         self.marker_id = 0
-        self.frame_id = "map"
+        self.frame_id = "odom"  # Change from "map" to "odom"
 
     def _set_marker_properties(self, marker, stamp):
         """Set common marker properties"""

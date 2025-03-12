@@ -77,6 +77,10 @@ class FrontierExplorationNode(Node):
         self.current_frontiers = None
         self.current_selected_centroid = None
         
+        # Add variables to store frontiers in map coordinates
+        self.map_origin = None
+        self.map_resolution = None
+        
         # Create timer for status checking
         self.create_timer(0.5, self.check_status)
 
@@ -128,21 +132,22 @@ class FrontierExplorationNode(Node):
     def get_robot_position(self):
         """Get robot position with proper transform handling"""
         try:
-            # Use latest available transform with small timeout
+            # Get the latest available transform
             transform = self.tf_buffer.lookup_transform(
                 'map',
                 'base_link',
-                rclpy.time.Time(),
-                rclpy.duration.Duration(seconds=1.0)
+                rclpy.time.Time(),  # Use latest available transform
+                rclpy.duration.Duration(seconds=0.1)
             )
+            
             self.robot_position = np.array([
                 transform.transform.translation.x,
                 transform.transform.translation.y
             ])
             return True
-        except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
-                tf2_ros.ExtrapolationException) as e:
-            self.get_logger().warning(f'Transform error: {str(e)}')
+            
+        except Exception as e:
+            self.get_logger().debug(f'Transform error: {str(e)}')
             return False
 
     def publish_goal(self, x, y, theta=1.0):
@@ -168,8 +173,32 @@ class FrontierExplorationNode(Node):
             return
 
         try:
+            # Check if map parameters have changed
+            current_origin = (msg.info.origin.position.x, msg.info.origin.position.y)
+            current_resolution = msg.info.resolution
+            
+            map_changed = (self.map_origin != current_origin or 
+                          self.map_resolution != current_resolution)
+            
+            if map_changed:
+                self.map_origin = current_origin
+                self.map_resolution = current_resolution
+                # Force frontier redetection when map parameters change
+                self.current_frontiers = None
+                self.current_selected_centroid = None
+            
             # Convert map to numpy array
             self.latest_map = np.array(msg.data).reshape((msg.info.height, msg.info.width))
+            
+            # Always visualize current frontiers if they exist
+            if self.current_frontiers is not None:
+                markers = self.visualizer.create_frontier_markers(
+                    self.current_frontiers,
+                    msg.info,
+                    self.robot_position,
+                    self.current_selected_centroid
+                )
+                self.visualization_pub.publish(markers)
             
             # Detect new frontiers only if we don't have current ones or reached the goal
             if self.current_frontiers is None:
@@ -199,16 +228,6 @@ class FrontierExplorationNode(Node):
                                 if len(self.previous_goals) > 10:
                                     self.previous_goals.pop(0)
                                 self.get_logger().info(f'Selected frontier with score: {score:.2f}')
-            
-            # Always visualize current frontiers if they exist
-            if self.current_frontiers is not None:
-                markers = self.visualizer.create_frontier_markers(
-                    self.current_frontiers,
-                    msg.info,
-                    self.robot_position,
-                    self.current_selected_centroid
-                )
-                self.visualization_pub.publish(markers)
                     
         except Exception as e:
             self.get_logger().error(f'Error in map_callback: {str(e)}')

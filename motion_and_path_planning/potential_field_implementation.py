@@ -86,9 +86,9 @@ class PotentialFieldMappingModel(Node):
         
         
 
-        self.__ka= 1
+        self.__ka= 0.7
 
-        self.__kr= 0.2
+        self.__kr= 0.5
 
         self.__distance_threshold= 1.0
 
@@ -255,12 +255,12 @@ class PotentialFieldMappingModel(Node):
         # Normalize heading difference to [-pi, pi]
         heading_difference = math.atan2(math.sin(heading_difference), math.cos(heading_difference))
 
-        max_vel=0.25
+        max_vel=0.1
         # Forward velocity and angular velocity
 
         # twist.linear.x=if twist.linear.x
         if np.linalg.norm(self.current_position-self.goal_position)<0.5:
-            max_vel=0.1
+            max_vel=0.05
 
         twist = Twist()
         twist.linear.x,twist.angular.z =self.limit_velocities(v_total_magnitude,heading_difference,max_vel)

@@ -40,6 +40,7 @@ class AStarPathPlanner(Node):
 
     def goal_sub_callback(self,msg):
         self.end_pose = (msg.x, msg.y)
+        self.get_logger().info('Goal Pose received!')
 
     def map_callback(self, msg):
         """Receives the map and constructs a graph for A*."""

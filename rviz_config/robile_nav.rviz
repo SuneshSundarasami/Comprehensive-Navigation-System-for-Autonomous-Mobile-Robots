@@ -10,6 +10,7 @@ Panels:
         - /LaserScan1
         - /Map1
         - /Path1
+        - /MarkerArray1
       Splitter Ratio: 0.5
     Tree Height: 723
   - Class: rviz_common/Selection
@@ -186,6 +187,8 @@ Visualization Manager:
           Value: true
         base_link:
           Value: true
+        map:
+          Value: true
         odom:
           Value: true
         robile_1_drive_left_hub_wheel_link:
@@ -230,6 +233,8 @@ Visualization Manager:
       Show Axes: true
       Show Names: false
       Tree:
+        map:
+          {}
         odom:
           base_footprint:
             base_link:
@@ -352,13 +357,15 @@ Visualization Manager:
       Enabled: true
       Name: MarkerArray
       Namespaces:
-        path_markers: true
+        frontier_points: true
+        path_to_frontier: true
+        selected_centroid: true
       Topic:
         Depth: 5
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /visualization_marker_array
+        Value: /frontier_markers
       Value: true
   Enabled: true
   Global Options:

@@ -32,14 +32,25 @@ class FrontierExplorationNode(Node):
         self.goal_publisher = self.create_publisher(
             Pose2D, 
             'end_pose', 
-            10)
+             10)
+
+        # Set up QoS profile for markers
+        marker_qos = rclpy.qos.QoSProfile(
+            reliability=rclpy.qos.ReliabilityPolicy.RELIABLE,
+            durability=rclpy.qos.DurabilityPolicy.TRANSIENT_LOCAL,
+            history=rclpy.qos.HistoryPolicy.KEEP_LAST,
+            depth=10
+        )
+
+        # Create visualization publisher with QoS
         self.visualization_pub = self.create_publisher(
             MarkerArray,
             'frontier_markers',
-            10)
+            marker_qos
+        )
 
         # Initialize TF listener
-        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_buffer = tf2_ros.Buffer(cache_time=rclpy.duration.Duration(seconds=10.0))
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
         # Initialize utility classes
@@ -61,6 +72,10 @@ class FrontierExplorationNode(Node):
         self.executing = False
         self.current_goal = None
         self.last_status = ""
+        
+        # Add variables to store current frontiers
+        self.current_frontiers = None
+        self.current_selected_centroid = None
         
         # Create timer for status checking
         self.create_timer(0.5, self.check_status)
@@ -103,16 +118,23 @@ class FrontierExplorationNode(Node):
                 if status in ['Goal Position Reached! Aligned orientation!', 'Waiting for goal pose']:
                     self.executing = False
                     self.current_goal = None
+                    # Reset frontiers when goal is reached
+                    self.current_frontiers = None
+                    self.current_selected_centroid = None
                     
         except Exception as e:
             self.get_logger().error(f'Service call failed: {str(e)}')
 
     def get_robot_position(self):
+        """Get robot position with proper transform handling"""
         try:
+            # Use latest available transform with small timeout
             transform = self.tf_buffer.lookup_transform(
                 'map',
                 'base_link',
-                rclpy.time.Time())
+                rclpy.time.Time(),
+                rclpy.duration.Duration(seconds=1.0)
+            )
             self.robot_position = np.array([
                 transform.transform.translation.x,
                 transform.transform.translation.y
@@ -120,7 +142,7 @@ class FrontierExplorationNode(Node):
             return True
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
                 tf2_ros.ExtrapolationException) as e:
-            self.get_logger().warning(f'Failed to get robot position: {str(e)}')
+            self.get_logger().warning(f'Transform error: {str(e)}')
             return False
 
     def publish_goal(self, x, y, theta=1.0):
@@ -142,55 +164,52 @@ class FrontierExplorationNode(Node):
 
     def map_callback(self, msg):
         """Process incoming map data and publish frontiers"""
-        if self.executing or not self.get_robot_position():
+        if not self.get_robot_position():
             return
 
         try:
             # Convert map to numpy array
             self.latest_map = np.array(msg.data).reshape((msg.info.height, msg.info.width))
             
-            # Detect frontiers
-            frontier_points = self.frontier_detector.detect_frontiers(self.latest_map)
+            # Detect new frontiers only if we don't have current ones or reached the goal
+            if self.current_frontiers is None:
+                frontier_points = self.frontier_detector.detect_frontiers(self.latest_map)
+                if len(frontier_points) > 0:
+                    self.current_frontiers = frontier_points
+                    
+                    # Select new goal only if not executing
+                    if not self.executing:
+                        selected_centroid, score = self.goal_selector.select_goal(
+                            frontier_points,
+                            self.latest_map,
+                            msg.info,
+                            self.robot_position,
+                            self.previous_goals
+                        )
 
-            # Visualize all frontiers first
-            if len(frontier_points) > 0:
+                        if selected_centroid is not None:
+                            self.current_selected_centroid = selected_centroid
+                            
+                            # Calculate and publish goal
+                            x = selected_centroid[1] * msg.info.resolution + msg.info.origin.position.x
+                            y = selected_centroid[0] * msg.info.resolution + msg.info.origin.position.y
+
+                            if self.publish_goal(x, y):
+                                self.previous_goals.append([x, y])
+                                if len(self.previous_goals) > 10:
+                                    self.previous_goals.pop(0)
+                                self.get_logger().info(f'Selected frontier with score: {score:.2f}')
+            
+            # Always visualize current frontiers if they exist
+            if self.current_frontiers is not None:
                 markers = self.visualizer.create_frontier_markers(
-                    frontier_points,
+                    self.current_frontiers,
                     msg.info,
                     self.robot_position,
-                    None
+                    self.current_selected_centroid
                 )
                 self.visualization_pub.publish(markers)
-
-                # Select best frontier
-                selected_centroid, score = self.goal_selector.select_goal(
-                    frontier_points,
-                    self.latest_map,
-                    msg.info,
-                    self.robot_position,
-                    self.previous_goals
-                )
-
-                if selected_centroid is not None:
-                    # Update visualization with selected frontier
-                    markers = self.visualizer.create_frontier_markers(
-                        frontier_points,
-                        msg.info,
-                        self.robot_position,
-                        selected_centroid
-                    )
-                    self.visualization_pub.publish(markers)
-
-                    # Calculate and publish goal
-                    x = selected_centroid[1] * msg.info.resolution + msg.info.origin.position.x
-                    y = selected_centroid[0] * msg.info.resolution + msg.info.origin.position.y
-
-                    if self.publish_goal(x, y):
-                        self.previous_goals.append([x, y])
-                        if len(self.previous_goals) > 10:
-                            self.previous_goals.pop(0)
-                        self.get_logger().info(f'Selected frontier with score: {score:.2f}')
-        
+                    
         except Exception as e:
             self.get_logger().error(f'Error in map_callback: {str(e)}')
             

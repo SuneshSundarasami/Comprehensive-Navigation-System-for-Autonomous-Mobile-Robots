@@ -29,6 +29,7 @@ setup(
     entry_points={
         'console_scripts': [
             f'pfieldmodel = {module_name}.potential_field_implementation:main',
+            f'pfieldmodel2 = {module_name}.pfield_v2:main',
             f'astar = {module_name}.a_star_path_planner:main',
             f'pose_exec = {module_name}.pose_execuetor:main',
             f'path_vis = {module_name}.path_visualizer:main',

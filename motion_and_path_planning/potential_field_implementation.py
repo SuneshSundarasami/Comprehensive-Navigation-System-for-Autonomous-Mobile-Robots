@@ -86,9 +86,9 @@ class PotentialFieldMappingModel(Node):
         
         
 
-        self.__ka= 0.7
+        self.__ka= 1
 
-        self.__kr= 0.5
+        self.__kr= 0.2
 
         self.__distance_threshold= 1.0
 

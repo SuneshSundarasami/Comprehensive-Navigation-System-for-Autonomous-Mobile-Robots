@@ -1,257 +1,324 @@
 import rclpy
 from rclpy.node import Node
-import time
-import math
+import numpy as np
+import tf_transformations
+import tf2_ros  
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import String
-from tf2_msgs.msg import TFMessage
-import tf_transformations
-from geometry_msgs.msg import Twist
-import numpy as np
-import tf2_ros
-from geometry_msgs.msg import Pose2D
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from geometry_msgs.msg import Twist, Pose2D
 from std_srvs.srv import Trigger
 
-class PotentialFieldMappingModel(Node):
+class PotentialFieldController(Node):
     def __init__(self):
         super().__init__('potential_field_node')
         
-        # Constants
-        self.CONTROL_RATE = 20.0  # Hz
-        self.MAX_VEL = 0.25  # m/s
-        self.SLOW_VEL = 0.15  # Increased from 0.1
-        self.MIN_VEL = 0.05  # Added minimum velocity
-        self.GOAL_THRESHOLD = 0.5  # meters
-        self.HEADING_THRESHOLD = 0.1  # radians
-        self.SLOW_ZONE = 0.8  # Distance to start slowing (meters)
+        self.setup_parameters()
+        self.setup_transforms()
+        self.setup_communications()
+        self.initialize_state()
         
-        # Potential field parameters
-        self.ATTRACT_GAIN = 1.0
-        self.REPULSE_GAIN = 0.5  # Increased for better obstacle avoidance
-        self.OBSTACLE_THRESHOLD = 1.0  # meters
-        
-        # Add debug publisher
-        self.debug_pub = self.create_publisher(String, 'pfield_debug', 10)
-        
-        self._setup_transforms()
-        self._setup_publishers_subscribers()
-        self._initialize_state()
-        
-        # Add timer for regular status updates
-        self.create_timer(1.0, self._debug_callback)
-        self.get_logger().info('Potential Field Node initialized')
+        self.create_timer(1.0, self.publish_debug_info)
+        self.get_logger().info('Potential field controller initialized')
 
-    def _setup_transforms(self):
-        """Initialize transform handling"""
+    def setup_parameters(self):
+        self.control_rate = 20.0
+        self.vel_max = 0.3
+        self.vel_slow = 0.2
+        self.vel_min = 0.1
+        self.dist_threshold = 0.15  
+        self.angle_threshold = 0.05  
+        self.slow_zone = 0.5
+        
+        self.gain_attract = 1.5
+        self.gain_repulse = 0.5
+        self.obstacle_radius = 0.8
+        self.max_accel = 0.2
+
+        # Add minima detection parameters
+        self.stuck_threshold = 0.05  # meters
+        self.stuck_time_threshold = 3.0  # seconds
+        self.escape_radius = 0.5  # meters
+        self.escape_angle = np.pi/4  # 45 degrees
+        self.escape_time = 2.0  # seconds
+        self.last_positions = []
+        self.last_check_time = None
+        self.is_escaping = False
+        self.escape_start_time = None
+
+    def setup_transforms(self):
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
-    def _setup_publishers_subscribers(self):
-        """Set up ROS communications"""
-        # Publishers
+    def setup_communications(self):
         self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
+        self.debug_pub = self.create_publisher(String, 'pfield_debug', 10)
         
-        # Subscribers
-        self.create_subscription(Pose2D, 'end_pose', self._goal_callback, 10)
-        self.create_subscription(Odometry, '/odom', self._odom_callback, 10)
-        self.create_subscription(LaserScan, '/scan', self._scan_callback, 10)
+        self.create_subscription(Pose2D, 'end_pose', self.on_goal_received, 10)
+        self.create_subscription(Odometry, '/odom', self.on_odom_received, 10)
+        self.create_subscription(LaserScan, '/scan', self.on_scan_received, 10)
         
-        # Service
-        self.status_service = self.create_service(
-            Trigger, 'get_pfield_status', self._status_callback)
+        self.status_srv = self.create_service(Trigger, 'get_pfield_status', self.handle_status_request)
 
-    def _initialize_state(self):
-        """Initialize state variables"""
-        self.current_pose = {'position': np.zeros(2), 'orientation': 0.0}
-        self.goal_pose = {'position': np.array([np.nan, np.nan]), 'orientation': np.nan}
-        self.v_total = np.zeros(2)
-        self.status = "Waiting for goal"
+    def initialize_state(self):
+        self.pose_current = {'pos': np.zeros(2), 'angle': 0.0}
+        self.pose_goal = {'pos': np.array([np.nan, np.nan]), 'angle': np.nan}
+        self.force_total = np.zeros(2)
+        self.force_repulse = np.zeros(2)
+        self.cmd_current = Twist()
+        self.status = "Waiting for goal pose"
 
-    def _goal_callback(self, msg):
-        """Handle new goal"""
-        self.goal_pose = {
-            'position': np.array([msg.x, msg.y]),
-            'orientation': msg.theta
+    def on_goal_received(self, msg):
+        self.pose_goal = {
+            'pos': np.array([msg.x, msg.y]),
+            'angle': msg.theta
         }
         self.status = "Moving to goal"
-        self.get_logger().info(f"Received new goal: ({msg.x}, {msg.y}, {msg.theta})")
+        self.get_logger().info(f"New goal: ({msg.x:.2f}, {msg.y:.2f}, {msg.theta:.2f})")
 
-    def _odom_callback(self, msg):
-        """Process odometry updates"""
-        if np.isnan(self.goal_pose['position'][0]):
+    def on_odom_received(self, msg):
+        if np.isnan(self.pose_goal['pos'][0]):
             return
 
-        # Update current pose
-        self.current_pose['position'] = np.array([
+        self.pose_current['pos'] = np.array([
             msg.pose.pose.position.x,
             msg.pose.pose.position.y
         ])
         
-        # Get yaw from quaternion
         _, _, yaw = tf_transformations.euler_from_quaternion([
-            msg.pose.pose.orientation.x,
-            msg.pose.pose.orientation.y,
-            msg.pose.pose.orientation.z,
-            msg.pose.pose.orientation.w
+            msg.pose.pose.orientation.x, msg.pose.pose.orientation.y,
+            msg.pose.pose.orientation.z, msg.pose.pose.orientation.w
         ])
-        self.current_pose['orientation'] = yaw
+        self.pose_current['angle'] = yaw
         
-        # Calculate control if not at goal
-        if not self._at_goal():
-            self._calculate_and_publish_control()
+        if not self.check_goal_reached():
+            self.update_control()
 
-    def _scan_callback(self, msg):
-        """Process laser scan data"""
-        if np.isnan(self.goal_pose['position'][0]):
+    def on_scan_received(self, msg):
+        if np.isnan(self.pose_goal['pos'][0]):
             return
 
-        # Convert scan to cartesian coordinates
         angles = np.arange(msg.angle_min, msg.angle_max, msg.angle_increment)
         ranges = np.array(msg.ranges[:len(angles)])
         
-        # Filter out invalid readings
         valid_idx = ~np.isnan(ranges) & ~np.isinf(ranges)
         angles, ranges = angles[valid_idx], ranges[valid_idx]
         
-        # Convert to cartesian
         x = ranges * np.cos(angles)
         y = ranges * np.sin(angles)
         obstacles = np.column_stack((x, y))
         
-        # Calculate repulsive forces
-        self._calculate_repulsive_forces(obstacles)
+        self.calculate_repulsion(obstacles)
 
-    def _calculate_repulsive_forces(self, obstacles):
-        """Calculate repulsive forces from obstacles"""
+    def calculate_repulsion(self, obstacles):
         try:
-            self.v_repulse = np.zeros(2)
-            for obstacle in obstacles:
-                dist = np.linalg.norm(self.current_pose['position'] - obstacle)
-                if dist < self.OBSTACLE_THRESHOLD:
-                    force = self.REPULSE_GAIN * (1/dist - 1/self.OBSTACLE_THRESHOLD) * \
-                            (self.current_pose['position'] - obstacle) / (dist**3)
-                    self.v_repulse += force
+            self.force_repulse = np.zeros(2)
+            for obs in obstacles:
+                dist = np.linalg.norm(self.pose_current['pos'] - obs)
+                if dist < self.obstacle_radius:
+                    force = self.gain_repulse * (1/dist - 1/self.obstacle_radius) * \
+                           (self.pose_current['pos'] - obs) / (dist**3)
+                    self.force_repulse += force
         except Exception as e:
-            self.get_logger().error(f'Error calculating repulsive forces: {str(e)}')
+            self.get_logger().error(f'Repulsion calculation error: {str(e)}')
 
-    def _calculate_and_publish_control(self):
-        """Calculate and publish control commands"""
+    def check_local_minima(self):
+        """Detect if robot is stuck in local minima"""
+        current_time = self.get_clock().now()
+        
+        # Initialize time check
+        if self.last_check_time is None:
+            self.last_check_time = current_time
+            self.last_positions.append(self.pose_current['pos'].copy())
+            return False
+            
+        # Add current position to history
+        if (current_time - self.last_check_time).nanoseconds / 1e9 >= 0.5:  # Check every 0.5s
+            self.last_check_time = current_time
+            self.last_positions.append(self.pose_current['pos'].copy())
+            
+            # Keep only last 6 positions (3 seconds)
+            if len(self.last_positions) > 6:
+                self.last_positions.pop(0)
+                
+            # Check if robot is stuck
+            if len(self.last_positions) >= 6:
+                max_dist = 0
+                for pos in self.last_positions:
+                    dist = np.linalg.norm(pos - self.last_positions[-1])
+                    max_dist = max(max_dist, dist)
+                
+                if max_dist < self.stuck_threshold:
+                    self.get_logger().warn("Local minima detected!")
+                    return True
+        
+        return False
+
+    def escape_local_minima(self):
+        """Generate escape behavior from local minima"""
+        current_time = self.get_clock().now()
+        
+        # Start escape behavior
+        if not self.is_escaping:
+            self.is_escaping = True
+            self.escape_start_time = current_time
+            self.last_positions.clear()
+            self.get_logger().info("Starting escape maneuver")
+            
+            # Calculate escape direction (perpendicular to goal direction)
+            to_goal = self.pose_goal['pos'] - self.pose_current['pos']
+            escape_angle = np.arctan2(to_goal[1], to_goal[0]) + self.escape_angle
+            self.escape_direction = np.array([
+                np.cos(escape_angle),
+                np.sin(escape_angle)
+            ])
+            
+        # Check if escape time is over
+        if (current_time - self.escape_start_time).nanoseconds / 1e9 >= self.escape_time:
+            self.is_escaping = False
+            self.escape_start_time = None
+            self.get_logger().info("Escape maneuver completed")
+            return None
+            
+        # Generate escape command
+        cmd = Twist()
+        cmd.linear.x = self.vel_max * 0.5  # Half speed during escape
+        
+        # Adjust heading to escape direction
+        heading_error = np.arctan2(self.escape_direction[1], self.escape_direction[0]) - self.pose_current['angle']
+        heading_error = np.arctan2(np.sin(heading_error), np.cos(heading_error))
+        cmd.angular.z = np.clip(heading_error * 2.0, -self.vel_max, self.vel_max)
+        
+        return cmd
+
+    def update_control(self):
         try:
-            # Calculate attractive force
-            to_goal = self.goal_pose['position'] - self.current_pose['position']
-            dist_to_goal = np.linalg.norm(to_goal)
-            v_attract = self.ATTRACT_GAIN * to_goal / dist_to_goal
-            
-            # Get latest obstacle forces
-            v_repulse = self.v_repulse if hasattr(self, 'v_repulse') else np.zeros(2)
-            
-            # Combine forces
-            self.v_total = v_attract + v_repulse
-            
-            # Create control command
+            # Check for local minima
+            if not self.is_escaping and self.check_local_minima():
+                escape_cmd = self.escape_local_minima()
+                if escape_cmd:
+                    self.cmd_vel_pub.publish(escape_cmd)
+                    self.cmd_current = escape_cmd
+                    return
+                    
+            # Regular control logic
             cmd = Twist()
-            v_mag = np.linalg.norm(self.v_total)
-            v_ang = np.arctan2(self.v_total[1], self.v_total[0])
             
-            # Progressive velocity scaling based on distance
-            if dist_to_goal < self.SLOW_ZONE:
-                # Linear interpolation between MIN_VEL and SLOW_VEL
-                progress = dist_to_goal / self.SLOW_ZONE
-                max_vel = self.MIN_VEL + (self.SLOW_VEL - self.MIN_VEL) * progress
+            if self.status == "Alligning orientation":
+                angle_error = self.pose_goal['angle'] - self.pose_current['angle']
+                angle_error = np.arctan2(np.sin(angle_error), np.cos(angle_error))
+                
+                # Increase angular velocity gain for faster rotation
+                angular_gain = 3.0
+                cmd.linear.x = 0.0
+                cmd.angular.z = np.clip(angle_error * angular_gain, -self.vel_max, self.vel_max)
+                
+                # Debug alignment
+                self.get_logger().debug(
+                    f"Alligning - Error: {np.degrees(angle_error):.1f}°, "
+                    f"Angular vel: {cmd.angular.z:.2f}"
+                )
             else:
-                max_vel = self.MAX_VEL
-            
-            # Calculate heading error
-            heading_error = v_ang - self.current_pose['orientation']
-            heading_error = np.arctan2(np.sin(heading_error), np.cos(heading_error))
-            
-            # Set velocities with smoother transitions
-            linear, angular = self._limit_velocities(v_mag, heading_error, max_vel)
-            cmd.linear.x = self._smooth_velocity(linear)
-            cmd.angular.z = angular
+                to_goal = self.pose_goal['pos'] - self.pose_current['pos']
+                dist = np.linalg.norm(to_goal)
+                
+                force_attract = self.gain_attract * to_goal / dist
+                self.force_total = force_attract + self.force_repulse
+                
+                vel_mag = np.linalg.norm(self.force_total)
+                vel_ang = np.arctan2(self.force_total[1], self.force_total[0])
+                
+                max_vel = self.vel_max
+                if dist < self.slow_zone:
+                    progress = dist / self.slow_zone
+                    max_vel = self.vel_min + (self.vel_slow - self.vel_min) * progress
+                
+                heading_error = vel_ang - self.pose_current['angle']
+                heading_error = np.arctan2(np.sin(heading_error), np.cos(heading_error))
+                
+                linear, angular = self.scale_velocities(vel_mag, heading_error, max_vel)
+                cmd.linear.x = self.smooth_velocity(linear)
+                cmd.angular.z = angular
             
             self.cmd_vel_pub.publish(cmd)
-            self.current_cmd = cmd
+            self.cmd_current = cmd
             
         except Exception as e:
-            self.get_logger().error(f'Error in control calculation: {str(e)}')
-            self._stop_robot()
+            self.get_logger().error(f'Control update error: {str(e)}')
+            self.stop_robot()
 
-    def _smooth_velocity(self, target_vel):
-        """Apply smoothing to velocity changes"""
-        current_vel = getattr(getattr(self, 'current_cmd', Twist()).linear, 'x', 0.0)
-        max_accel = 0.1  # Maximum acceleration per control cycle
-        
-        # Limit acceleration
-        vel_diff = target_vel - current_vel
-        vel_change = np.clip(vel_diff, -max_accel, max_accel)
-        return current_vel + vel_change
-
-    def _limit_velocities(self, linear, angular, max_vel):
-        """Scale velocities to respect limits"""
+    def scale_velocities(self, linear, angular, max_vel):
         if abs(angular) > np.pi/4:
-            # Allow some forward motion during rotation
             return max_vel * 0.2, np.clip(angular, -max_vel, max_vel)
-        
-        # Scale both velocities proportionally if needed
         scale = max_vel / max(abs(linear), abs(angular), max_vel)
         return linear * scale, angular * scale
 
-    def _at_goal(self):
-        """Check if robot has reached the goal"""
-        if np.linalg.norm(self.current_pose['position'] - self.goal_pose['position']) < self.GOAL_THRESHOLD:
-            if abs(self.current_pose['orientation'] - self.goal_pose['orientation']) < self.HEADING_THRESHOLD:
-                self.status = "Goal reached"
+    def smooth_velocity(self, target_vel):
+        current_vel = self.cmd_current.linear.x
+        vel_diff = target_vel - current_vel
+        vel_change = np.clip(vel_diff, -self.max_accel, self.max_accel)
+        return current_vel + vel_change
+
+    def check_goal_reached(self):
+        dist = np.linalg.norm(self.pose_current['pos'] - self.pose_goal['pos'])
+        angle_error = self.pose_goal['angle'] - self.pose_current['angle']
+        angle_error = np.arctan2(np.sin(angle_error), np.cos(angle_error))
+        
+        # Increase distance threshold slightly
+        if dist < self.dist_threshold:
+            if abs(angle_error) < self.angle_threshold:
+                self.status = "Goal Position Reached! Alligned orientation!"  
+                self.stop_robot()
                 return True
-            self.status = "Aligning orientation"
+            else:
+                if self.status != "Alligning orientation":
+                    self.get_logger().info(
+                        f"Starting orientation alignment. Error: {np.degrees(angle_error):.1f}°"
+                    )
+                self.status = "Alligning orientation"
+                return False
+        
+        if self.status != "Moving to goal":
+            self.get_logger().info(f"Moving to goal. Distance: {dist:.2f}m")
+        self.status = "Moving to goal"
         return False
 
-    def _status_callback(self, request, response):
-        """Handle status service requests"""
+    def handle_status_request(self, request, response):
         response.success = True
         response.message = self.status
         return response
 
-    def _stop_robot(self):
-        """Emergency stop function"""
+    def stop_robot(self):
         cmd = Twist()
-        cmd.linear.x = 0.0
-        cmd.angular.z = 0.0
         self.cmd_vel_pub.publish(cmd)
 
-    def _debug_callback(self):
-        """Publish debug information"""
+    def publish_debug_info(self):
         try:
-            # Calculate distance to goal if goal exists
-            if not np.isnan(self.goal_pose['position'][0]):
-                dist_to_goal = f"{np.linalg.norm(self.goal_pose['position'] - self.current_pose['position']):.2f}m"
-            else:
-                dist_to_goal = "N/A"
-
-            # Get current velocities
-            current_vel = getattr(self, 'current_cmd', Twist())
-            linear_vel = getattr(current_vel.linear, 'x', 0.0)
-            angular_vel = getattr(current_vel.angular, 'z', 0.0)
-
-            debug_msg = String()
-            debug_msg.data = (
-                f"Status: {self.status}\n"
-                f"Current pos: [{self.current_pose['position'][0]:.2f}, {self.current_pose['position'][1]:.2f}]\n"
-                f"Goal pos: [{self.goal_pose['position'][0]:.2f}, {self.goal_pose['position'][1]:.2f}]\n"
-                f"Distance to goal: {dist_to_goal}\n"
-                f"Velocities - Linear: {linear_vel:.2f} m/s, Angular: {angular_vel:.2f} rad/s\n"
-                f"Total force: [{self.v_total[0]:.2f}, {self.v_total[1]:.2f}]"
-            )
-            self.debug_pub.publish(debug_msg)
-            self.get_logger().info(debug_msg.data)
+            if not np.isnan(self.pose_goal['pos'][0]):
+                dist = np.linalg.norm(self.pose_goal['pos'] - self.pose_current['pos'])
+                angle_error = self.pose_goal['angle'] - self.pose_current['angle']
+                angle_error = np.arctan2(np.sin(angle_error), np.cos(angle_error))
+                
+                debug_msg = String()
+                debug_msg.data = (
+                    f"Status: {self.status}\n"
+                    f"Position: [{self.pose_current['pos'][0]:.2f}, {self.pose_current['pos'][1]:.2f}]\n"
+                    f"Goal: [{self.pose_goal['pos'][0]:.2f}, {self.pose_goal['pos'][1]:.2f}]\n"
+                    f"Distance: {dist:.2f}m\n"
+                    f"Angle error: {np.degrees(angle_error):.1f}°\n"
+                    f"Velocities - Linear: {self.cmd_current.linear.x:.2f} m/s, "
+                    f"Angular: {self.cmd_current.angular.z:.2f} rad/s\n"
+                    f"Total force: [{self.force_total[0]:.2f}, {self.force_total[1]:.2f}]"
+                )
+                self.debug_pub.publish(debug_msg)
+                self.get_logger().info(debug_msg.data)
+                
         except Exception as e:
-            self.get_logger().error(f"Error in debug callback: {str(e)}")
+            self.get_logger().error(f"Debug info error: {str(e)}")
 
 def main(args=None):
     rclpy.init(args=args)
-    node = PotentialFieldMappingModel()
+    node = PotentialFieldController()
     rclpy.spin(node)
     node.destroy_node()
     rclpy.shutdown()

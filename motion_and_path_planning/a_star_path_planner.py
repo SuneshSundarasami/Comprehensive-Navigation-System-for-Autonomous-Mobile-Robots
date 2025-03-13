@@ -13,13 +13,10 @@ from cv_bridge import CvBridge
 import tf_transformations
 from geometry_msgs.msg import Quaternion
 from sensor_msgs.msg import Image
-from geometry_msgs.msg import Pose2D
 
 class AStarPathPlanner(Node):
     def __init__(self):
         super().__init__('astar_path_planner')
-
-        self.goal_sub=self.create_subscription(Pose2D, '/end_pose',self.goal_sub_callback, 10)
 
         self.map_sub = self.create_subscription(OccupancyGrid, '/map', self.map_callback, 10)
         self.odom_sub = self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
@@ -30,17 +27,12 @@ class AStarPathPlanner(Node):
         self.map_data = None
         self.map_info = None
         self.current_pose = None
-        self.end_pose = (0, 0)  # Goal in world coordinates
+        self.end_pose = (6, 0)  # Goal in world coordinates
         self.graph = None
         self.clearance_map = None
         self.map_processed = False  # Flag to ensure map is only processed once
 
         self.get_logger().info('A* Path Planner Node initialized')
-
-
-    def goal_sub_callback(self,msg):
-        self.end_pose = (msg.x, msg.y)
-        self.get_logger().info('Goal Pose received!')
 
     def map_callback(self, msg):
         """Receives the map and constructs a graph for A*."""
@@ -117,7 +109,7 @@ class AStarPathPlanner(Node):
 
 
 
-    def create_graph(self, raw_map, obstacle_radius=1):
+    def create_graph(self, raw_map, obstacle_radius=5):
         """Creates a weighted graph representation of the grid map for A* with wider obstacles."""
         height, width = raw_map.shape
         G = nx.grid_2d_graph(width, height)

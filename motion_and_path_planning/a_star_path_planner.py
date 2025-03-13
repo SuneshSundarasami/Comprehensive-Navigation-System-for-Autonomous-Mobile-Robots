@@ -13,6 +13,7 @@ from cv_bridge import CvBridge
 import tf_transformations
 from geometry_msgs.msg import Quaternion
 from sensor_msgs.msg import Image
+from geometry_msgs.msg import Pose2D
 
 class AStarPathPlanner(Node):
     def __init__(self):
@@ -23,14 +24,24 @@ class AStarPathPlanner(Node):
         self.path_pub = self.create_publisher(Path, '/planned_path', 10)
         self.clearance_pub = self.create_publisher(OccupancyGrid, '/clearance_map', 10)
 
+        # Add goal pose subscription
+        self.goal_sub = self.create_subscription(
+            Pose2D,
+            'goal_pose',  # Match the topic name from end_pose_publisher
+            self.goal_callback,
+            10
+        )
 
+        # Initialize state variables with hardcoded end pose
         self.map_data = None
         self.map_info = None
         self.current_pose = None
-        self.end_pose = (6, 0)  # Goal in world coordinates
+        self.end_pose = (6, -4)  # Hardcoded initial end pose
+        self.initial_path_planned = False  # Flag to track initial path
+        self.last_end_pose = None
         self.graph = None
         self.clearance_map = None
-        self.map_processed = False  # Flag to ensure map is only processed once
+        self.map_processed = False
 
         self.get_logger().info('A* Path Planner Node initialized')
 
@@ -44,12 +55,12 @@ class AStarPathPlanner(Node):
 
         self.clearance_map = self.compute_clearance_map(raw_map)
         self.graph = self.create_graph(raw_map)
-        self.map_processed = True  # Mark as processed
-
-        self.get_logger().info(f'Received map: {msg.info.width}x{msg.info.height}, Resolution: {msg.info.resolution}')
-        self.plan_path()  # Try planning a path if pose is available
-
-
+        self.map_processed = True
+    
+        # Try planning initial path with hardcoded end pose
+        if not self.initial_path_planned and self.current_pose:
+            self.plan_path()
+            self.initial_path_planned = True
 
     def compute_clearance_map(self, raw_map):
         try:
@@ -147,10 +158,18 @@ class AStarPathPlanner(Node):
         return G
 
     def odom_callback(self, msg):
-        """Receives odometry updates and triggers path planning."""
-        self.current_pose = (msg.pose.pose.position.x, msg.pose.pose.position.y)
-        if self.map_processed:  # Only plan if the map has been processed
+        """Receives odometry updates."""
+        new_pose = (msg.pose.pose.position.x, msg.pose.pose.position.y)
+        
+        # Update current pose
+        self.current_pose = new_pose
+        
+        # Only plan initial path when map is processed and we have current pose
+        if (not self.initial_path_planned and self.map_processed and 
+            self.current_pose and self.end_pose):
             self.plan_path()
+            self.initial_path_planned = True
+            self.last_end_pose = self.end_pose
 
     def world_to_grid(self, x, y):
         """Converts world coordinates to grid coordinates."""
@@ -278,8 +297,17 @@ class AStarPathPlanner(Node):
         clearance_factor = self.clearance_map[a[1], a[0]] 
         return euclidean_dist / (1.0 + (10**2) * clearance_factor)
     
-
-
+    def goal_callback(self, msg):
+        """Handle new goal pose from end_pose_publisher."""
+        new_end_pose = (msg.x, msg.y)
+        
+        # Only update if goal has changed and initial path was already planned
+        if (self.initial_path_planned and new_end_pose != self.end_pose):
+            self.get_logger().info(f'New goal received: {new_end_pose}')
+            self.end_pose = new_end_pose
+            if self.map_processed and self.current_pose:
+                self.plan_path()
+                self.last_end_pose = new_end_pose
 
 
 def main(args=None):

@@ -22,25 +22,26 @@ class PotentialFieldController(Node):
         self.get_logger().info('Potential field controller initialized')
 
     def setup_parameters(self):
+        # Remove reverse motion parameters
         self.control_rate = 20.0
         self.vel_max = 0.3
         self.vel_slow = 0.2
         self.vel_min = 0.1
-        self.dist_threshold = 0.15  
+        self.dist_threshold = 0.2  
         self.angle_threshold = 0.05  
         self.slow_zone = 0.5
         
         self.gain_attract = 1.5
         self.gain_repulse = 0.5
-        self.obstacle_radius = 0.8
+        self.obstacle_radius = 0.1
         self.max_accel = 0.2
 
-        # Add minima detection parameters
-        self.stuck_threshold = 0.05  # meters
-        self.stuck_time_threshold = 3.0  # seconds
-        self.escape_radius = 0.5  # meters
-        self.escape_angle = np.pi/4  # 45 degrees
-        self.escape_time = 2.0  # seconds
+        # Keep minima detection parameters
+        self.stuck_threshold = 0.05
+        self.stuck_time_threshold = 3.0
+        self.escape_radius = 0.5
+        self.escape_angle = np.pi/4
+        self.escape_time = 2.0
         self.last_positions = []
         self.last_check_time = None
         self.is_escaping = False
@@ -192,39 +193,60 @@ class PotentialFieldController(Node):
         return cmd
 
     def update_control(self):
+        """Main control loop with state machine logic"""
         try:
-            # Check for local minima
+            cmd = Twist()
+            
+            # If in Allignment phase, only handle rotation
+            if self.status == "Alligning orientation":
+                angle_error = self.pose_goal['angle'] - self.pose_current['angle']
+                angle_error = np.arctan2(np.sin(angle_error), np.cos(angle_error))
+                
+                cmd.linear.x = 0.0  # Pure rotation
+                cmd.angular.z = np.clip(angle_error * 2.0, -self.vel_max, self.vel_max)  # Removed negative sign
+                
+                self.cmd_vel_pub.publish(cmd)
+                self.cmd_current = cmd
+                return
+                
+            # Regular motion control
+            to_goal = self.pose_goal['pos'] - self.pose_current['pos']
+            dist = np.linalg.norm(to_goal)
+            
+            # Calculate direct heading to goal
+            goal_heading = np.arctan2(to_goal[1], to_goal[0])
+            heading_error = goal_heading - self.pose_current['angle']
+            heading_error = np.arctan2(np.sin(heading_error), np.cos(heading_error))
+            
+            # Calculate forces
+            force_attract = self.gain_attract * to_goal / dist
+            self.force_total = force_attract + self.force_repulse
+            
+            # Check if path is clear
+            path_is_clear = np.linalg.norm(self.force_repulse) < 0.1
+            
+            # Check for local minima and execute escape if needed
             if not self.is_escaping and self.check_local_minima():
                 escape_cmd = self.escape_local_minima()
                 if escape_cmd:
                     self.cmd_vel_pub.publish(escape_cmd)
                     self.cmd_current = escape_cmd
                     return
-                    
-            # Regular control logic
-            cmd = Twist()
             
-            if self.status == "Alligning orientation":
-                angle_error = self.pose_goal['angle'] - self.pose_current['angle']
-                angle_error = np.arctan2(np.sin(angle_error), np.cos(angle_error))
-                
-                # Increase angular velocity gain for faster rotation
-                angular_gain = 3.0
+            # Forward motion control
+            if abs(heading_error) > np.pi/3:  # Large heading error
+                # First Allign with goal
                 cmd.linear.x = 0.0
-                cmd.angular.z = np.clip(angle_error * angular_gain, -self.vel_max, self.vel_max)
-                
-                # Debug alignment
-                self.get_logger().debug(
-                    f"Alligning - Error: {np.degrees(angle_error):.1f}°, "
-                    f"Angular vel: {cmd.angular.z:.2f}"
-                )
+                cmd.angular.z = np.clip(heading_error * 2.0, -self.vel_max, self.vel_max)  # Removed negative sign
+            elif abs(heading_error) < 0.1 and path_is_clear:
+                # Direct forward motion when well-Alligned
+                cmd.linear.x = self.vel_max
+                if dist < self.slow_zone:
+                    progress = dist / self.slow_zone
+                    cmd.linear.x = self.vel_min + (self.vel_slow - self.vel_min) * progress
+                cmd.angular.z = np.clip(heading_error * 2.0, -self.vel_max, self.vel_max)  # Removed negative sign
             else:
-                to_goal = self.pose_goal['pos'] - self.pose_current['pos']
-                dist = np.linalg.norm(to_goal)
-                
-                force_attract = self.gain_attract * to_goal / dist
-                self.force_total = force_attract + self.force_repulse
-                
+                # Normal potential field motion
                 vel_mag = np.linalg.norm(self.force_total)
                 vel_ang = np.arctan2(self.force_total[1], self.force_total[0])
                 
@@ -233,16 +255,13 @@ class PotentialFieldController(Node):
                     progress = dist / self.slow_zone
                     max_vel = self.vel_min + (self.vel_slow - self.vel_min) * progress
                 
-                heading_error = vel_ang - self.pose_current['angle']
-                heading_error = np.arctan2(np.sin(heading_error), np.cos(heading_error))
-                
                 linear, angular = self.scale_velocities(vel_mag, heading_error, max_vel)
                 cmd.linear.x = self.smooth_velocity(linear)
-                cmd.angular.z = angular
+                cmd.angular.z = angular  # Removed negative sign
             
             self.cmd_vel_pub.publish(cmd)
             self.cmd_current = cmd
-            
+                
         except Exception as e:
             self.get_logger().error(f'Control update error: {str(e)}')
             self.stop_robot()
@@ -254,6 +273,7 @@ class PotentialFieldController(Node):
         return linear * scale, angular * scale
 
     def smooth_velocity(self, target_vel):
+        """Smooth velocity transitions including reverse motion"""
         current_vel = self.cmd_current.linear.x
         vel_diff = target_vel - current_vel
         vel_change = np.clip(vel_diff, -self.max_accel, self.max_accel)
@@ -273,7 +293,7 @@ class PotentialFieldController(Node):
             else:
                 if self.status != "Alligning orientation":
                     self.get_logger().info(
-                        f"Starting orientation alignment. Error: {np.degrees(angle_error):.1f}°"
+                        f"Starting orientation Allignment. Error: {np.degrees(angle_error):.1f}°"
                     )
                 self.status = "Alligning orientation"
                 return False

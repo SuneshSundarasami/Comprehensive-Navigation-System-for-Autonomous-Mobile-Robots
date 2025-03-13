@@ -76,24 +76,41 @@ class PoseExecutor(Node):
             self.get_logger().error(f'Service call failed: {str(e)}')
 
     def path_callback(self, msg):
-        """Receives the planned path and starts execution if not already in progress."""
-        if self.executing:
+        """Receives the planned path and updates execution."""
+        new_poses = msg.poses
+        if not new_poses:
             return
             
-        self.pose_list = msg.poses
-        if not self.pose_list:
-            return
+        # Check if path has changed
+        if self.has_path_changed(new_poses):
+            self.get_logger().info("New path detected, updating poses...")
+            self.pose_list = new_poses
+            self.current_index = 0
+            self.executing = True
+            self.waiting_for_trigger = False
+            # Print all received poses
+            print("Received New Poses:")
+            for i, pose in enumerate(self.pose_list):
+                x, y, theta = self.extract_pose_2d(pose)
+                print(f"Pose {i+1}: x={x}, y={y}, theta={theta}")
+            self.publish_current_pose()
+
+    def has_path_changed(self, new_poses):
+        """Check if the new path is different from current path."""
+        if len(new_poses) != len(self.pose_list):
+            return True
+        
+        for new_pose, old_pose in zip(new_poses, self.pose_list):
+            new_x, new_y, new_theta = self.extract_pose_2d(new_pose)
+            old_x, old_y, old_theta = self.extract_pose_2d(old_pose)
             
-        # Print all received poses
-        print("Received Poses:")
-        for i, pose in enumerate(self.pose_list):
-            x, y, theta = self.extract_pose_2d(pose)
-            print(f"Pose {i+1}: x={x}, y={y}, theta={theta}")
-            
-        self.current_index = 0
-        self.executing = True
-        self.waiting_for_trigger = False
-        self.publish_current_pose()
+            # Check if positions differ by more than a small threshold
+            if (abs(new_x - old_x) > 0.01 or 
+                abs(new_y - old_y) > 0.01 or 
+                abs(new_theta - old_theta) > 0.01):
+                return True
+        
+        return False
 
     def extract_pose_2d(self, pose):
         """Extracts x, y, and yaw from a PoseStamped message."""

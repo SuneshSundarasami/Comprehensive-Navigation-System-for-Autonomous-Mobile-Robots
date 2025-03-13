@@ -187,8 +187,6 @@ Visualization Manager:
           Value: true
         base_link:
           Value: true
-        map:
-          Value: true
         odom:
           Value: true
         robile_1_drive_left_hub_wheel_link:
@@ -233,8 +231,6 @@ Visualization Manager:
       Show Axes: true
       Show Names: false
       Tree:
-        map:
-          {}
         odom:
           base_footprint:
             base_link:
@@ -357,15 +353,25 @@ Visualization Manager:
       Enabled: true
       Name: MarkerArray
       Namespaces:
-        frontier_points: true
-        path_to_frontier: true
-        selected_centroid: true
+        {}
       Topic:
         Depth: 5
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /frontier_markers
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: MarkerArray
+      Namespaces:
+        path_markers: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /visualization_marker_array
       Value: true
   Enabled: true
   Global Options:

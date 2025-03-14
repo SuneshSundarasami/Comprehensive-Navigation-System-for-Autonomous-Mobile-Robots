@@ -9,6 +9,7 @@ import math
 from visualization_msgs.msg import Marker
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy, QoSDurabilityPolicy
 from .motion_model import MotionModel
+from .measurement_model import MeasurementModel
 
 class ParticleFilter(Node):
     def __init__(self):
@@ -16,7 +17,7 @@ class ParticleFilter(Node):
         
         # Parameters
         self.declare_parameter('num_particles', 1000)  # Increased for better coverage
-        self.declare_parameter('motion_update_rate', 10.0)  # Hz
+        self.declare_parameter('motion_update_rate', 100.0)  # Hz
         self.declare_parameter('measurement_update_rate', 5.0)  # Hz
         
         self.num_particles = self.get_parameter('num_particles').value
@@ -37,6 +38,7 @@ class ParticleFilter(Node):
         # Initialize motion model
         
         self.motion_model = MotionModel()
+        self.measurement_model = MeasurementModel()
         
         # Initial poses for two particles
         self.init_pose = [-0.913, -4.88, 0.0]  # First particle at map origin
@@ -193,7 +195,7 @@ class ParticleFilter(Node):
             return
         
         # Scale velocities to match robot motion
-        velocity_scale = 0.1  # Reduce velocity magnitude
+        velocity_scale = 0.35  # Reduce velocity magnitude
         linear_velocity = self.latest_cmd_vel.linear.x * velocity_scale
         angular_velocity = self.latest_cmd_vel.angular.z * velocity_scale
         
@@ -215,61 +217,64 @@ class ParticleFilter(Node):
         )
 
     def measurement_update(self):
-        """Update particle weights based on measurement model at fixed frequency"""
+        """Update particle weights using feature-based measurement model"""
         if self.particles is None or self.map_data is None or self.latest_scan is None:
             return
-            
-        msg = self.latest_scan
-        epsilon = 1e-10
         
-        # Pre-compute scan angles for efficiency
-        angles = msg.angle_min + np.arange(0, len(msg.ranges), self.scan_subsample) * msg.angle_increment
+        # Extract map features (cached after first call)
+        map_features = self.measurement_model.extract_map_features(
+            self.map_data, 
+            self.map_info.resolution
+        )
         
-        # Initialize weights array
-        self.weights = np.zeros(len(self.particles)) + epsilon
+        # Convert scan to points - make sure arrays have same dimensions
+        angles = np.arange(
+            self.latest_scan.angle_min,
+            self.latest_scan.angle_max,  # Remove increment addition to match ranges length
+            self.latest_scan.angle_increment * self.scan_subsample
+        )
+        ranges = np.array(self.latest_scan.ranges[::self.scan_subsample])
+        
+        # Ensure angles and ranges have same length
+        min_len = min(len(angles), len(ranges))
+        angles = angles[:min_len]
+        ranges = ranges[:min_len]
+        
+        # Apply range filters
+        valid_idx = (ranges > self.latest_scan.range_min) & (ranges < self.latest_scan.range_max)
+        
+        if not np.any(valid_idx):
+            return
+        
+        # Convert valid scans to points
+        scan_points = np.column_stack((
+            np.cos(angles[valid_idx]) * ranges[valid_idx],
+            np.sin(angles[valid_idx]) * ranges[valid_idx]
+        ))
+        
+        # Debug scan processing
+        self.get_logger().debug(
+            f'Scan processing:'
+            f'\n - Total points: {len(ranges)}'
+            f'\n - Valid points: {np.sum(valid_idx)}'
+            f'\n - Scan points shape: {scan_points.shape}'
+        )
         
         # Update weights for all particles
-        for i, particle in enumerate(self.particles):
-            num_matched = 0
-            num_valid_beams = 0
-            
-            # Process scan beams
-            for j, angle in enumerate(angles):
-                range_reading = msg.ranges[j * self.scan_subsample]
-                
-                if range_reading > msg.range_min and range_reading < min(msg.range_max, self.max_scan_distance):
-                    num_valid_beams += 1
-                    
-                    # Calculate expected scan endpoint in map coordinates
-                    global_angle = particle[2] + angle
-                    end_x = particle[0] + range_reading * np.cos(global_angle)
-                    end_y = particle[1] + range_reading * np.sin(global_angle)
-                    
-                    # Convert to map coordinates
-                    mx = int((end_x - self.map_info.origin.position.x) / self.map_info.resolution)
-                    my = int((end_y - self.map_info.origin.position.y) / self.map_info.resolution)
-                    
-                    # Check if point is within map bounds and matches an obstacle
-                    if (0 <= mx < self.map_data.shape[1] and 
-                        0 <= my < self.map_data.shape[0]):
-                        if self.map_data[my, mx] == 100:  # Hit matches obstacle
-                            num_matched += 1
-            
-            # Calculate likelihood for this particle
-            if num_valid_beams > 0:
-                self.weights[i] = num_matched / num_valid_beams
+        self.weights = np.array([
+            self.measurement_model.compute_likelihood(
+                particle, scan_points, map_features, self.map_info
+            ) for particle in self.particles
+        ])
         
         # Normalize weights
         weight_sum = np.sum(self.weights)
         if weight_sum > 0:
             self.weights /= weight_sum
             
-            # Calculate effective particle ratio
+            # Resample if needed
             effective_particles = 1.0 / np.sum(np.square(self.weights))
-            effective_ratio = effective_particles / len(self.particles)
-            
-            # Resample if effective ratio is below threshold
-            if effective_ratio < self.resample_threshold:
+            if effective_particles < self.num_particles * self.resample_threshold:
                 self.resample()
 
     def resample(self):

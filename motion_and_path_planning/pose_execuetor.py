@@ -12,6 +12,13 @@ class PoseExecutor(Node):
     def __init__(self):
         super().__init__('pose_executor')
         
+        # Add progress publisher
+        self.progress_pub = self.create_publisher(
+            String,
+            '/pose_progress',
+            10
+        )
+        
         # Remove status subscription and create service client
         self.status_client = self.create_client(Trigger, 'get_pfield_status')
         
@@ -68,7 +75,11 @@ class PoseExecutor(Node):
             if status != self.last_status:
                 self.last_status = status
                 if status in ['Goal Position Reached! Alligned orientation!', 'Waiting for goal pose']:
-                    self.get_logger().info(f"Received status: {status}")
+                    progress_msg = f"Completed pose {self.current_index + 1}/{len(self.pose_list)}"
+                    if self.current_index + 1==len(self.pose_list):
+                        progress_msg="All poses completed!"
+                    self.publish_progress(progress_msg)
+                    
                     time.sleep(2)
                     self.publish_next_pose()
                     
@@ -148,11 +159,19 @@ class PoseExecutor(Node):
         """Publishes the next pose in the list."""
         if self.current_index >= len(self.pose_list):
             self.executing = False
+            self.publish_progress("All poses completed!")
             return
             
         self.waiting_for_trigger = False
         self.current_index += 1
         self.publish_current_pose()
+
+    def publish_progress(self, message):
+        """Publish progress updates"""
+        msg = String()
+        msg.data = message
+        self.progress_pub.publish(msg)
+        self.get_logger().info(message)
 
 def main(args=None):
     rclpy.init(args=args)

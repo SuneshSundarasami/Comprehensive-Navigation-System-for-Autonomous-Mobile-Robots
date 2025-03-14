@@ -24,10 +24,10 @@ class PotentialFieldController(Node):
     def setup_parameters(self):
         # Remove reverse motion parameters
         self.control_rate = 20.0
-        self.vel_max = 0.3
-        self.vel_slow = 0.2
+        self.vel_max = 0.1
+        self.vel_slow = 0.05
         self.vel_min = 0.1
-        self.dist_threshold = 0.2  
+        self.dist_threshold = 0.5  
         self.angle_threshold = 0.05  
         self.slow_zone = 0.5
         

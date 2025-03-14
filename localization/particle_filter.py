@@ -217,20 +217,14 @@ class ParticleFilter(Node):
         )
 
     def measurement_update(self):
-        """Update particle weights using feature-based measurement model"""
+        """Update particle weights using simple scan matching"""
         if self.particles is None or self.map_data is None or self.latest_scan is None:
             return
         
-        # Extract map features (cached after first call)
-        map_features = self.measurement_model.extract_map_features(
-            self.map_data, 
-            self.map_info.resolution
-        )
-        
-        # Convert scan to points - make sure arrays have same dimensions
+        # Convert scan to points
         angles = np.arange(
             self.latest_scan.angle_min,
-            self.latest_scan.angle_max,  # Remove increment addition to match ranges length
+            self.latest_scan.angle_max,
             self.latest_scan.angle_increment * self.scan_subsample
         )
         ranges = np.array(self.latest_scan.ranges[::self.scan_subsample])
@@ -240,7 +234,7 @@ class ParticleFilter(Node):
         angles = angles[:min_len]
         ranges = ranges[:min_len]
         
-        # Apply range filters
+        # Filter valid ranges
         valid_idx = (ranges > self.latest_scan.range_min) & (ranges < self.latest_scan.range_max)
         
         if not np.any(valid_idx):
@@ -252,18 +246,10 @@ class ParticleFilter(Node):
             np.sin(angles[valid_idx]) * ranges[valid_idx]
         ))
         
-        # Debug scan processing
-        self.get_logger().debug(
-            f'Scan processing:'
-            f'\n - Total points: {len(ranges)}'
-            f'\n - Valid points: {np.sum(valid_idx)}'
-            f'\n - Scan points shape: {scan_points.shape}'
-        )
-        
-        # Update weights for all particles
+        # Update weights using simple measurement model
         self.weights = np.array([
             self.measurement_model.compute_likelihood(
-                particle, scan_points, map_features, self.map_info
+                particle, scan_points, self.map_data, self.map_info
             ) for particle in self.particles
         ])
         
@@ -278,14 +264,44 @@ class ParticleFilter(Node):
                 self.resample()
 
     def resample(self):
-        """Systematic resampling"""
-        positions = (np.random.random() + np.arange(self.num_particles)) / self.num_particles
+        """Systematic resampling with random particle injection"""
+        # Get best particle
+        best_idx = np.argmax(self.weights)
+        best_particle = self.particles[best_idx]
+        
+        # Keep 80% of particles through resampling
+        num_keep = int(self.num_particles * 0.8)
+        
+        # Systematic resampling for particles to keep
+        positions = (np.random.random() + np.arange(num_keep)) / num_keep
         cumsum = np.cumsum(self.weights)
         cumsum[-1] = 1.0
-        
         indices = np.searchsorted(cumsum, positions)
-        self.particles = self.particles[indices]
+        resampled_particles = self.particles[indices]
+        
+        # Generate 20% new random particles near best estimate
+        num_random = self.num_particles - num_keep
+        random_particles = np.zeros((num_random, 3))
+        
+        # Random particle generation parameters
+        pos_std = 0.3  # Standard deviation for position (meters)
+        angle_std = 0.2  # Standard deviation for angle (radians)
+        
+        # Generate random particles with Gaussian noise around best particle
+        random_particles[:, 0] = np.random.normal(best_particle[0], pos_std, num_random)
+        random_particles[:, 1] = np.random.normal(best_particle[1], pos_std, num_random)
+        random_particles[:, 2] = np.random.normal(best_particle[2], angle_std, num_random)
+        
+        # Combine resampled and random particles
+        self.particles = np.vstack((resampled_particles, random_particles))
         self.weights = np.ones(self.num_particles) / self.num_particles
+        
+        self.get_logger().debug(
+            f'Resampled particles:'
+            f'\n - Kept: {num_keep}'
+            f'\n - Random: {num_random}'
+            f'\n - Best particle: ({best_particle[0]:.2f}, {best_particle[1]:.2f}, {best_particle[2]:.2f})'
+        )
 
     def publish_visualization(self):
         """Publish particles and best estimate"""

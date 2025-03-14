@@ -32,7 +32,7 @@ class ParticleFilter(Node):
         self.max_scan_distance = 3.0  # Max distance to consider for scan matching
         self.scan_subsample = 5  # Use every nth scan ray
         
-        self.local_init = True
+        self.local_init = False
         self.init_range = 0.5  # Small range to separate particles
         
         # Initialize motion model
@@ -167,12 +167,13 @@ class ParticleFilter(Node):
         self.weights = np.ones(self.num_particles) / self.num_particles
         
         self.get_logger().info(f'Successfully initialized {self.num_particles} particles within map bounds')
-        # Log map bounds and first few particles for debugging
         self.get_logger().info(f'Map bounds: X[{map_bounds_x[0]:.2f}, {map_bounds_x[1]:.2f}], ' +
                               f'Y[{map_bounds_y[0]:.2f}, {map_bounds_y[1]:.2f}]')
         for i in range(min(5, self.num_particles)):
-            self.get_logger().info(f'Particle {i}: ({self.particles[i, 0]::.2f}, ' +
-                                  f'{self.particles[i, 1]:.2f}, {self.particles[i, 2]:.2f})')
+            self.get_logger().info(
+                f'Particle {i}: ({self.particles[i, 0]:.2f}, '
+                f'{self.particles[i, 1]:.2f}, {self.particles[i, 2]:.2f})'
+            )
 
     def cmd_vel_callback(self, msg):
         """Store latest velocity command"""

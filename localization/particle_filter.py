@@ -16,9 +16,9 @@ class ParticleFilter(Node):
         super().__init__('particle_filter')
         
         # Parameters
-        self.declare_parameter('num_particles', 1000)  # Increased for better coverage
+        self.declare_parameter('num_particles', 10000)  # Increased for better coverage
         self.declare_parameter('motion_update_rate', 100.0)  # Hz
-        self.declare_parameter('measurement_update_rate', 5.0)  # Hz
+        self.declare_parameter('measurement_update_rate', 0.5)  # Hz
         
         self.num_particles = self.get_parameter('num_particles').value
         self.motion_update_rate = self.get_parameter('motion_update_rate').value
@@ -32,7 +32,7 @@ class ParticleFilter(Node):
         self.max_scan_distance = 3.0  # Max distance to consider for scan matching
         self.scan_subsample = 5  # Use every nth scan ray
         
-        self.local_init = False
+        self.local_init = True
         self.init_range = 0.5  # Small range to separate particles
         
         # Initialize motion model

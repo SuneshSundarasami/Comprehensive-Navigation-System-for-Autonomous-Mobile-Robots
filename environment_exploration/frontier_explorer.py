@@ -21,8 +21,8 @@ class FrontierExplorationNode(Node):
         
         # Publishers
         self.goal_publisher = self.create_publisher(
-            Pose2D,  # Changed from PoseStamped to Pose2D
-            'goal_pose',  # Changed topic name to match end_pose_publisher
+            Pose2D,
+            'goal_pose',
             10)
         self.visualization_pub = self.create_publisher(
             MarkerArray,
@@ -36,7 +36,7 @@ class FrontierExplorationNode(Node):
             10
         )
         
-        # Subscriber
+        # Subscribers
         self.map_sub = self.create_subscription(
             OccupancyGrid,
             'map',
@@ -65,7 +65,7 @@ class FrontierExplorationNode(Node):
             information_radius=5.0,
             min_distance=0.5,
             max_distance=5.0,
-            logger=self.get_logger()  # Pass logger instance
+            logger=self.get_logger()
         )
 
         # State variables
@@ -101,55 +101,11 @@ class FrontierExplorationNode(Node):
         self.get_logger().info(f'Progress update: {msg.data}')
         
         if "All poses completed!" in msg.data:
-            if not self.is_spinning:
-                self.waiting_for_completion = False
-                self.start_spin()  # Start spinning after reaching frontier
-
-    def start_spin(self):
-        """Start spinning in place"""
-        self.is_spinning = True
-        self.spin_start_time = self.get_clock().now()
-        
-        # Create timer for spin control
-        self.spin_timer = self.create_timer(0.1, self.spin_control)
-        self.get_logger().info('Started spinning for observation')
-        
-    def spin_control(self):
-        """Control spin motion"""
-        if not self.is_spinning:
-            self.spin_timer.cancel()
-            return
-            
-        current_time = self.get_clock().now()
-        elapsed = (current_time - self.spin_start_time).nanoseconds / 1e9
-        
-        if elapsed < self.spin_duration:
-            # Spin command
-            cmd = Twist()
-            cmd.angular.z = 1.0  # rad/s
-            self.cmd_vel_pub.publish(cmd)
-        else:
-            # Stop spinning
-            self.stop_spin()
             self.detect_and_publish_frontier()
-    
-    def stop_spin(self):
-        """Stop spinning and clean up"""
-        self.is_spinning = False
-        if self.spin_timer:
-            self.spin_timer.cancel()
-            self.spin_timer = None
-            
-        # Stop robot
-        cmd = Twist()
-        self.cmd_vel_pub.publish(cmd)
-        self.get_logger().info('Completed spin observation')
-        self.executing = False
+
 
     def detect_and_publish_frontier(self):
         """Detect and publish new frontier goal"""
-        if self.is_spinning:
-            return  # Don't detect frontiers while spinning
             
         try:
             # Get current frontiers
@@ -191,8 +147,8 @@ class FrontierExplorationNode(Node):
             self.get_logger().error(f'Error detecting frontier: {str(e)}')
 
     def map_callback(self, msg):
-        if not self.get_robot_position() or self.executing or self.waiting_for_completion:
-            return
+        # if not self.get_robot_position() or self.executing or self.waiting_for_completion:
+        #     return
 
         try:
             # Store map data and info

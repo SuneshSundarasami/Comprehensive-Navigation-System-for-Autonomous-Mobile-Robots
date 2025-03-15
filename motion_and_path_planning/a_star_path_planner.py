@@ -120,7 +120,7 @@ class AStarPathPlanner(Node):
 
 
 
-    def create_graph(self, raw_map, obstacle_radius=0):
+    def create_graph(self, raw_map, obstacle_radius=2):
         """Creates a weighted graph representation of the grid map for A* with wider obstacles."""
         height, width = raw_map.shape
         G = nx.grid_2d_graph(width, height)
@@ -300,7 +300,28 @@ class AStarPathPlanner(Node):
         if start_grid not in self.graph:
             start_grid = self.find_closest_valid_point(start_grid)
             if start_grid is None:
-                self.get_logger().error('No valid start position found!')
+                self.get_logger().warn('No valid start position found! Publishing direct path to goal.')
+                if self.end_pose == (10000, 10000) :
+                    return
+                # Create and publish single-pose path to goal
+                path_msg = Path()
+                path_msg.header.frame_id = 'odom'
+                path_msg.header.stamp = self.get_clock().now().to_msg()
+                
+                pose = PoseStamped()
+                pose.pose.position.x = self.end_pose[0]
+                pose.pose.position.y = self.end_pose[1]
+                pose.pose.position.z = 0.0
+                
+                # Calculate orientation towards goal
+                dx = self.end_pose[0] - self.current_pose[0]
+                dy = self.end_pose[1] - self.current_pose[1]
+                theta = np.arctan2(dy, dx)
+                pose.pose.orientation = self.yaw_to_quaternion(theta)
+                
+                path_msg.poses.append(pose)
+                self.path_pub.publish(path_msg)
+                self.get_logger().info('Published direct path to goal')
                 return
             self.get_logger().info(f'Adjusted start position to: {start_grid}')
         
@@ -308,8 +329,30 @@ class AStarPathPlanner(Node):
         if end_grid not in self.graph:
             end_grid = self.find_closest_valid_point(end_grid)
             if end_grid is None:
-                self.get_logger().error('No valid goal position found!')
+                self.get_logger().warn('No valid goal position found! Publishing direct path to goal.')
+                if self.end_pose == (10000, 10000) :
+                    return
+                # Create and publish single-pose path to goal
+                path_msg = Path()
+                path_msg.header.frame_id = 'odom'
+                path_msg.header.stamp = self.get_clock().now().to_msg()
+                
+                pose = PoseStamped()
+                pose.pose.position.x = self.end_pose[0]
+                pose.pose.position.y = self.end_pose[1]
+                pose.pose.position.z = 0.0
+                
+                # Calculate orientation towards goal
+                dx = self.end_pose[0] - self.current_pose[0]
+                dy = self.end_pose[1] - self.current_pose[1]
+                theta = np.arctan2(dy, dx)
+                pose.pose.orientation = self.yaw_to_quaternion(theta)
+                
+                path_msg.poses.append(pose)
+                self.path_pub.publish(path_msg)
+                self.get_logger().info('Published direct path to goal')
                 return
+                
             self.get_logger().info(f'Adjusted goal position to: {end_grid}')
             # Update end_pose with the new valid position
             self.end_pose = self.grid_to_world(*end_grid)
@@ -317,6 +360,26 @@ class AStarPathPlanner(Node):
         # Verify connectivity
         if not nx.has_path(self.graph, start_grid, end_grid):
             self.get_logger().error(f'No path exists between {start_grid} and {end_grid}')
+            path_msg = Path()
+            path_msg.header.frame_id = 'odom'
+            path_msg.header.stamp = self.get_clock().now().to_msg()
+            
+            pose = PoseStamped()
+            pose.pose.position.x = self.end_pose[0]
+            pose.pose.position.y = self.end_pose[1]
+            pose.pose.position.z = 0.0
+            
+            # Calculate orientation towards goal
+            dx = self.end_pose[0] - self.current_pose[0]
+            dy = self.end_pose[1] - self.current_pose[1]
+            theta = np.arctan2(dy, dx)
+            pose.pose.orientation = self.yaw_to_quaternion(theta)
+            
+            path_msg.poses.append(pose)
+            self.path_pub.publish(path_msg)
+            self.get_logger().info('Published direct path to goal')
+            return
+
             return
 
         try:

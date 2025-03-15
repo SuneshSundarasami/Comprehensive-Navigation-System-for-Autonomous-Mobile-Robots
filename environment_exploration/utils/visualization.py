@@ -12,15 +12,7 @@ class FrontierVisualizer:
         self.last_markers = {}
 
     def create_frontier_markers(self, frontier_points, map_info, robot_position, selected_centroid=None, all_centroids=None):
-        """Create visualization markers for frontiers and clusters
-        
-        Args:
-            frontier_points: List of frontier points in grid coordinates
-            map_info: Map metadata from OccupancyGrid message
-            robot_position: Current robot position [x, y]
-            selected_centroid: Selected frontier centroid in grid coordinates
-            all_centroids: List of all cluster centroids being considered
-        """
+        """Create visualization markers for frontiers and clusters"""
         marker_array = MarkerArray()
         
         # Use time 0 to ensure markers are always displayed
@@ -41,22 +33,27 @@ class FrontierVisualizer:
             points_marker.lifetime.sec = 0
             marker_array.markers.append(points_marker)
             
-            # Add markers for all considered clusters (red)
-            if all_centroids is not None:
-                for centroid in all_centroids:
-                    if not np.array_equal(centroid, selected_centroid):  # Skip selected centroid
-                        cluster_marker = self._create_cluster_marker(centroid, map_info, is_selected=False)
-                        cluster_marker.header.frame_id = self.frame_id
-                        cluster_marker.header.stamp = stamp
-                        cluster_marker.lifetime.sec = 0
-                        marker_array.markers.append(cluster_marker)
+            # Add markers for all considered clusters first
+            if all_centroids is not None and len(all_centroids) > 0:
+                for i, centroid in enumerate(all_centroids):
+                    # Only skip if it's exactly the selected centroid
+                    if selected_centroid is not None and np.array_equal(centroid, selected_centroid):
+                        continue
+                        
+                    cluster_marker = self._create_cluster_marker(centroid, map_info, is_selected=False)
+                    cluster_marker.header.frame_id = self.frame_id
+                    cluster_marker.header.stamp = stamp
+                    cluster_marker.lifetime.sec = 0
+                    cluster_marker.ns = f"cluster_{i}"  # Add namespace to prevent ID conflicts
+                    marker_array.markers.append(cluster_marker)
             
-            # Add marker for selected cluster (green)
+            # Add marker for selected cluster last (so it's on top)
             if selected_centroid is not None:
                 selected_marker = self._create_cluster_marker(selected_centroid, map_info, is_selected=True)
                 selected_marker.header.frame_id = self.frame_id
                 selected_marker.header.stamp = stamp
                 selected_marker.lifetime.sec = 0
+                selected_marker.ns = "selected_cluster"
                 marker_array.markers.append(selected_marker)
 
         return marker_array
@@ -77,17 +74,17 @@ class FrontierVisualizer:
         marker.id = self.marker_id
         self.marker_id += 1
         
-        # Make points smaller and more translucent
-        marker.scale.x = 0.05  # Reduced from 0.1
-        marker.scale.y = 0.05  # Reduced from 0.1
-        marker.color = ColorRGBA(r=0.4, g=0.4, b=1.0, a=0.8)  # Lighter blue, more transparent
+        # Make points more visible
+        marker.scale.x = 0.08  # Slightly larger
+        marker.scale.y = 0.08
+        marker.color = ColorRGBA(r=0.0, g=0.6, b=1.0, a=0.9)  # Brighter blue, more opaque
         
         # Convert grid coordinates to world coordinates
         for point in frontier_points:
             p = Point()
             p.x = point[1] * map_info.resolution + map_info.origin.position.x
             p.y = point[0] * map_info.resolution + map_info.origin.position.y
-            p.z = 0.05
+            p.z = 0.1  # Slightly higher for better visibility
             marker.points.append(p)
         
         return marker
@@ -119,22 +116,22 @@ class FrontierVisualizer:
         marker.id = self.marker_id
         self.marker_id += 1
         
-        # Smaller size for both selected and unselected
-        size = 0.3 if is_selected else 0.2
+        # Larger size for better visibility
+        size = 0.4 if is_selected else 0.3
         marker.scale.x = size
         marker.scale.y = size
         marker.scale.z = size
         
-        # Lighter colors and more translucent
+        # More visible colors
         if is_selected:
-            marker.color = ColorRGBA(r=0.2, g=1.0, b=0.2, a=0.7)  # Light green
+            marker.color = ColorRGBA(r=0.0, g=1.0, b=0.0, a=0.9)  # Bright green, more opaque
         else:
-            marker.color = ColorRGBA(r=1.0, g=0.2, b=0.2, a=0.4)  # Light red
+            marker.color = ColorRGBA(r=1.0, g=0.0, b=0.0, a=0.8)  # Bright red, more opaque
         
-        # Convert to world coordinates
+        # Convert to world coordinates and raise height
         marker.pose.position.x = centroid[1] * map_info.resolution + map_info.origin.position.x
         marker.pose.position.y = centroid[0] * map_info.resolution + map_info.origin.position.y
-        marker.pose.position.z = 0.15
+        marker.pose.position.z = 0.2  # Higher position for better visibility
         marker.pose.orientation.w = 1.0
         
         return marker

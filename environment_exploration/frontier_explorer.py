@@ -106,32 +106,31 @@ class FrontierExplorationNode(Node):
 
     def detect_and_publish_frontier(self):
         """Detect and publish new frontier goal"""
-            
         try:
-            # Get current frontiers
             frontier_points = self.frontier_detector.detect_frontiers(self.latest_map)
 
             if len(frontier_points) > 0:
-                # Select best frontier based on current position
-                selected_centroid, distance_score = self.goal_selector.select_goal(
+                # Unpack all three return values
+                selected_centroid, score, all_centroids = self.goal_selector.select_goal(
                     frontier_points,
                     self.latest_map,
                     self.latest_map_info,
                     self.robot_position,
-                    []  # Empty list instead of previous_goals
+                    []
                 )
 
                 if selected_centroid is not None:
-                    # Visualize current frontiers
+                    # Visualize frontiers with all centroids
                     markers = self.visualizer.create_frontier_markers(
                         frontier_points,
                         self.latest_map_info,
                         self.robot_position,
-                        selected_centroid
+                        selected_centroid,
+                        all_centroids  # Pass all centroids for visualization
                     )
                     self.visualization_pub.publish(markers)
 
-                    # Publish new goal
+                    # Publish goal
                     goal = Pose2D()
                     goal.x = selected_centroid[1] * self.latest_map_info.resolution + self.latest_map_info.origin.position.x
                     goal.y = selected_centroid[0] * self.latest_map_info.resolution + self.latest_map_info.origin.position.y
@@ -140,7 +139,7 @@ class FrontierExplorationNode(Node):
                     self.goal_publisher.publish(goal)
                     self.executing = True
                     self.get_logger().info(
-                        f'Published new frontier goal at ({goal.x:.2f}, {goal.y:.2f}) at distance {-distance_score:.2f}m'
+                        f'Published new frontier goal at ({goal.x:.2f}, {goal.y:.2f}) at distance {-score:.2f}m'
                     )
 
         except Exception as e:

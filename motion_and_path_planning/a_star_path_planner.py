@@ -120,7 +120,7 @@ class AStarPathPlanner(Node):
 
 
 
-    def create_graph(self, raw_map, obstacle_radius=3):
+    def create_graph(self, raw_map, obstacle_radius=0):
         """Creates a weighted graph representation of the grid map for A* with wider obstacles."""
         height, width = raw_map.shape
         G = nx.grid_2d_graph(width, height)
@@ -243,41 +243,44 @@ class AStarPathPlanner(Node):
 
         return waypoints
     
-    def find_closest_valid_point(self, target_grid, max_search_radius=100):
-        """Find the closest valid point to the target in the graph."""
-        if target_grid in self.graph:
+    def find_closest_valid_point(self, target_grid, start_grid=None, max_search_radius=100):
+        """Find the closest valid and reachable point to the target in the graph."""
+        if target_grid in self.graph and (start_grid is None or 
+            nx.has_path(self.graph, start_grid, target_grid)):
             return target_grid
 
         target_x, target_y = target_grid
         min_distance = float('inf')
         closest_point = None
+        candidates = []
 
         # Search in expanding squares around the target
         for r in range(1, max_search_radius):
-            for dx in range(-r, r + 1):
-                for dy in [-r, r]:  # Top and bottom edges
-                    check_x, check_y = target_x + dx, target_y + dy
+            # Check all points in the perimeter (including diagonals)
+            for i in range(-r, r + 1):
+                for dx, dy in [(1, 0), (0, 1), (-1, 0), (0, -1),  # Cardinals
+                            (1, 1), (1, -1), (-1, 1), (-1, -1)]:  # Diagonals
+                    check_x = target_x + (i * dx)
+                    check_y = target_y + (i * dy)
                     point = (check_x, check_y)
+                    
                     if point in self.graph:
                         dist = np.sqrt((check_x - target_x)**2 + (check_y - target_y)**2)
-                        if dist < min_distance:
-                            min_distance = dist
-                            closest_point = point
+                        # Store candidates sorted by distance
+                        candidates.append((dist, point))
 
-                for dy in range(-r + 1, r):  # Left and right edges
-                    for dx in [-r, r]:
-                        check_x, check_y = target_x + dx, target_y + dy
-                        point = (check_x, check_y)
-                        if point in self.graph:
-                            dist = np.sqrt((check_x - target_x)**2 + (check_y - target_y)**2)
-                            if dist < min_distance:
-                                min_distance = dist
-                                closest_point = point
+            # Sort candidates by distance and check reachability
+            if candidates:
+                candidates.sort(key=lambda x: x[0])  # Sort by distance
+                for dist, point in candidates:
+                    # Check if point is reachable from start
+                    if start_grid is None or nx.has_path(self.graph, start_grid, point):
+                        self.get_logger().debug(
+                            f'Found reachable point at distance {dist:.2f} from target'
+                        )
+                        return point
 
-            if closest_point is not None:
-                break
-
-        return closest_point
+        return None
 
     def plan_path(self):
         """Plans a path using A* with precomputed clearance."""

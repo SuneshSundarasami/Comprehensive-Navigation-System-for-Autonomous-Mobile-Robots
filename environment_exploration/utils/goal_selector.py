@@ -3,9 +3,9 @@ from sklearn.cluster import DBSCAN
 
 class GoalSelector:
     def __init__(self, information_radius, min_distance, max_distance, logger=None):
-        self.max_distance = 5.0  # Maximum distance to consider
-        self.min_cluster_size = 5
-        self.clustering_eps = 2.0
+        self.max_distance = 10.0  # Maximum distance to consider
+        self.min_cluster_size = 2
+        self.clustering_eps = 100
         self.exploration_radius = 10  # Radius to check for unexplored cells
         self.distance_weight = 0.4  # Weight for distance score
         self.unexplored_weight = 0.6  # Weight for unexplored area score

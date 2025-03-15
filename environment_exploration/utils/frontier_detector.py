@@ -6,7 +6,7 @@ class FrontierDetector:
     def __init__(self, min_frontier_size, clustering_eps):
         self.min_frontier_size = min_frontier_size
         self.clustering_eps = clustering_eps
-        self.wall_thickness = 10  # Number of dilations for walls
+        self.wall_thickness = 5  # Number of dilations for walls
 
     def detect_frontiers(self, map_data):
         free_space = (map_data == 0).astype(np.uint8)

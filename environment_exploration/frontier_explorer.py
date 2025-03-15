@@ -6,9 +6,9 @@ from visualization_msgs.msg import MarkerArray
 from std_msgs.msg import String
 import numpy as np
 import tf2_ros
-from utils.visualization import FrontierVisualizer
-from utils.frontier_detector import FrontierDetector
-from utils.goal_selector import GoalSelector
+from .utils.visualization import FrontierVisualizer
+from .utils.frontier_detector import FrontierDetector
+from .utils.goal_selector import GoalSelector
 
 class FrontierExplorationNode(Node):
     def __init__(self):
@@ -28,7 +28,14 @@ class FrontierExplorationNode(Node):
             MarkerArray,
             'frontier_markers',
              10)
-            
+             
+        # Add cmd_vel publisher for spinning
+        self.cmd_vel_pub = self.create_publisher(
+            Twist,
+            'cmd_vel',
+            10
+        )
+        
         # Subscriber
         self.map_sub = self.create_subscription(
             OccupancyGrid,
@@ -54,7 +61,12 @@ class FrontierExplorationNode(Node):
             self.min_frontier_size,
             self.clustering_eps
         )
-        self.goal_selector = GoalSelector(1.0, 0.5, self.max_distance)  # Simple parameters
+        self.goal_selector = GoalSelector(
+            information_radius=5.0,
+            min_distance=0.5,
+            max_distance=5.0,
+            logger=self.get_logger()  # Pass logger instance
+        )
 
         # State variables
         self.robot_position = np.array([0.0, 0.0])
@@ -62,6 +74,12 @@ class FrontierExplorationNode(Node):
         self.latest_map = None
         self.executing = False
         self.waiting_for_completion = False
+        
+        # Add spin control variables
+        self.is_spinning = False
+        self.spin_start_time = None
+        self.spin_duration = 6.0  # Time to complete full rotation (seconds)
+        self.spin_timer = None
 
     def get_robot_position(self):
         try:
@@ -83,28 +101,72 @@ class FrontierExplorationNode(Node):
         self.get_logger().info(f'Progress update: {msg.data}')
         
         if "All poses completed!" in msg.data:
-            self.executing = False
-            self.waiting_for_completion = False
-            # Force new frontier detection
-            if self.latest_map is not None:
-                self.detect_and_publish_frontier()
+            if not self.is_spinning:
+                self.waiting_for_completion = False
+                self.start_spin()  # Start spinning after reaching frontier
+
+    def start_spin(self):
+        """Start spinning in place"""
+        self.is_spinning = True
+        self.spin_start_time = self.get_clock().now()
+        
+        # Create timer for spin control
+        self.spin_timer = self.create_timer(0.1, self.spin_control)
+        self.get_logger().info('Started spinning for observation')
+        
+    def spin_control(self):
+        """Control spin motion"""
+        if not self.is_spinning:
+            self.spin_timer.cancel()
+            return
+            
+        current_time = self.get_clock().now()
+        elapsed = (current_time - self.spin_start_time).nanoseconds / 1e9
+        
+        if elapsed < self.spin_duration:
+            # Spin command
+            cmd = Twist()
+            cmd.angular.z = 1.0  # rad/s
+            self.cmd_vel_pub.publish(cmd)
+        else:
+            # Stop spinning
+            self.stop_spin()
+            self.detect_and_publish_frontier()
+    
+    def stop_spin(self):
+        """Stop spinning and clean up"""
+        self.is_spinning = False
+        if self.spin_timer:
+            self.spin_timer.cancel()
+            self.spin_timer = None
+            
+        # Stop robot
+        cmd = Twist()
+        self.cmd_vel_pub.publish(cmd)
+        self.get_logger().info('Completed spin observation')
+        self.executing = False
 
     def detect_and_publish_frontier(self):
         """Detect and publish new frontier goal"""
+        if self.is_spinning:
+            return  # Don't detect frontiers while spinning
+            
         try:
+            # Get current frontiers
             frontier_points = self.frontier_detector.detect_frontiers(self.latest_map)
 
             if len(frontier_points) > 0:
+                # Select best frontier based on current position
                 selected_centroid, distance_score = self.goal_selector.select_goal(
                     frontier_points,
                     self.latest_map,
                     self.latest_map_info,
                     self.robot_position,
-                    self.previous_goals
+                    []  # Empty list instead of previous_goals
                 )
 
                 if selected_centroid is not None:
-                    # Visualize frontiers
+                    # Visualize current frontiers
                     markers = self.visualizer.create_frontier_markers(
                         frontier_points,
                         self.latest_map_info,
@@ -118,10 +180,6 @@ class FrontierExplorationNode(Node):
                     goal.x = selected_centroid[1] * self.latest_map_info.resolution + self.latest_map_info.origin.position.x
                     goal.y = selected_centroid[0] * self.latest_map_info.resolution + self.latest_map_info.origin.position.y
                     goal.theta = 1.0
-
-                    self.previous_goals.append([goal.x, goal.y])
-                    if len(self.previous_goals) > 10:
-                        self.previous_goals.pop(0)
 
                     self.goal_publisher.publish(goal)
                     self.executing = True

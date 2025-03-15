@@ -49,12 +49,12 @@ class FrontierVisualizer:
                 centroid_marker.lifetime.nanosec = 0
                 marker_array.markers.append(centroid_marker)
 
-                path_marker = self._create_path_marker(selected_centroid, map_info, robot_position)
-                path_marker.header.frame_id = self.frame_id
-                path_marker.header.stamp = stamp
-                path_marker.lifetime.sec = 0
-                path_marker.lifetime.nanosec = 0
-                marker_array.markers.append(path_marker)
+                # path_marker = self._create_path_marker(selected_centroid, map_info, robot_position)
+                # path_marker.header.frame_id = self.frame_id
+                # path_marker.header.stamp = stamp
+                # path_marker.lifetime.sec = 0
+                # path_marker.lifetime.nanosec = 0
+                # marker_array.markers.append(path_marker)
 
         return marker_array
 
@@ -107,27 +107,27 @@ class FrontierVisualizer:
         
         return marker
 
-    def _create_path_marker(self, selected_centroid, map_info, robot_position):
-        marker = Marker()
-        marker.type = Marker.LINE_STRIP
-        marker.action = Marker.ADD
-        marker.id = self.marker_id
-        self.marker_id += 1
+    # def _create_path_marker(self, selected_centroid, map_info, robot_position):
+    #     marker = Marker()
+    #     marker.type = Marker.LINE_STRIP
+    #     marker.action = Marker.ADD
+    #     marker.id = self.marker_id
+    #     self.marker_id += 1
         
-        marker.scale.x = 0.05
-        marker.color = ColorRGBA(r=0.0, g=1.0, b=0.0, a=1.0)
+    #     marker.scale.x = 0.05
+    #     marker.color = ColorRGBA(r=0.0, g=1.0, b=0.0, a=1.0)
         
-        # Start point (robot position)
-        start = Point()
-        start.x = robot_position[0]
-        start.y = robot_position[1]
-        start.z = 0.05
+    #     # Start point (robot position)
+    #     start = Point()
+    #     start.x = robot_position[0]
+    #     start.y = robot_position[1]
+    #     start.z = 0.05
         
-        # End point (selected frontier)
-        end = Point()
-        end.x = selected_centroid[1] * map_info.resolution + map_info.origin.position.x
-        end.y = selected_centroid[0] * map_info.resolution + map_info.origin.position.y
-        end.z = 0.05
+    #     # End point (selected frontier)
+    #     end = Point()
+    #     end.x = selected_centroid[1] * map_info.resolution + map_info.origin.position.x
+    #     end.y = selected_centroid[0] * map_info.resolution + map_info.origin.position.y
+    #     end.z = 0.05
         
-        marker.points = [start, end]
-        return marker
+    #     marker.points = [start, end]
+    #     return marker

@@ -22,20 +22,21 @@ class PotentialFieldController(Node):
         self.get_logger().info('Potential field controller initialized')
 
     def setup_parameters(self):
-        # Remove reverse motion parameters
-        self.control_rate = 20.0
-        self.vel_max = 0.1
-        self.vel_slow = 0.05
-        self.vel_min = 0.1
-        self.dist_threshold = 0.5  
-        self.angle_threshold = 0.05  
+        # Separate linear and angular velocity limits
+        self.linear_vel_max = 0.2
+        self.angular_vel_max = 0.5  # Higher angular velocity limit
+        self.linear_vel_slow = 0.1
+        self.linear_vel_min = 0.01
+        
+        self.dist_threshold = 0.2  
+        self.angle_threshold = 0.1  
         self.slow_zone = 0.5
         
         self.gain_attract = 1.5
         self.gain_repulse = 0.5
         self.obstacle_radius = 0.1
         self.max_accel = 0.2
-
+        
         # Keep minima detection parameters
         self.stuck_threshold = 0.05
         self.stuck_time_threshold = 3.0
@@ -183,12 +184,12 @@ class PotentialFieldController(Node):
             
         # Generate escape command
         cmd = Twist()
-        cmd.linear.x = self.vel_max * 0.5  # Half speed during escape
+        cmd.linear.x = self.linear_vel_max * 0.5  # Half speed during escape
         
         # Adjust heading to escape direction
         heading_error = np.arctan2(self.escape_direction[1], self.escape_direction[0]) - self.pose_current['angle']
         heading_error = np.arctan2(np.sin(heading_error), np.cos(heading_error))
-        cmd.angular.z = np.clip(heading_error * 2.0, -self.vel_max, self.vel_max)
+        cmd.angular.z = np.clip(heading_error * 2.0, -self.angular_vel_max, self.angular_vel_max)
         
         return cmd
 
@@ -203,7 +204,7 @@ class PotentialFieldController(Node):
                 angle_error = np.arctan2(np.sin(angle_error), np.cos(angle_error))
                 
                 cmd.linear.x = 0.0  # Pure rotation
-                cmd.angular.z = np.clip(angle_error * 2.0, -self.vel_max, self.vel_max)  # Removed negative sign
+                cmd.angular.z = np.clip(angle_error * 2.0, -self.angular_vel_max, self.angular_vel_max)
                 
                 self.cmd_vel_pub.publish(cmd)
                 self.cmd_current = cmd
@@ -235,29 +236,37 @@ class PotentialFieldController(Node):
             
             # Forward motion control
             if abs(heading_error) > np.pi/3:  # Large heading error
-                # First Allign with goal
+                # Pure rotation for large heading errors
                 cmd.linear.x = 0.0
-                cmd.angular.z = np.clip(heading_error * 2.0, -self.vel_max, self.vel_max)  # Removed negative sign
+                cmd.angular.z = np.clip(heading_error * 2.0, -self.angular_vel_max, self.angular_vel_max)
             elif abs(heading_error) < 0.1 and path_is_clear:
-                # Direct forward motion when well-Alligned
-                cmd.linear.x = self.vel_max
+                # Direct forward motion when well-aligned
+                cmd.linear.x = self.linear_vel_max
                 if dist < self.slow_zone:
+                    # Modified velocity scaling for smoother approach
                     progress = dist / self.slow_zone
-                    cmd.linear.x = self.vel_min + (self.vel_slow - self.vel_min) * progress
-                cmd.angular.z = np.clip(heading_error * 2.0, -self.vel_max, self.vel_max)  # Removed negative sign
+                    cmd.linear.x = max(
+                        self.linear_vel_min,
+                        self.linear_vel_max * progress
+                    )
+                cmd.angular.z = np.clip(heading_error * 2.0, -self.angular_vel_max, self.angular_vel_max)
             else:
                 # Normal potential field motion
                 vel_mag = np.linalg.norm(self.force_total)
                 vel_ang = np.arctan2(self.force_total[1], self.force_total[0])
                 
-                max_vel = self.vel_max
+                # Maintain higher minimum velocity
+                max_vel = self.linear_vel_max
                 if dist < self.slow_zone:
                     progress = dist / self.slow_zone
-                    max_vel = self.vel_min + (self.vel_slow - self.vel_min) * progress
+                    max_vel = max(
+                        self.linear_vel_min,
+                        self.linear_vel_max * progress
+                    )
                 
                 linear, angular = self.scale_velocities(vel_mag, heading_error, max_vel)
-                cmd.linear.x = self.smooth_velocity(linear)
-                cmd.angular.z = angular  # Removed negative sign
+                cmd.linear.x = linear
+                cmd.angular.z = angular
             
             self.cmd_vel_pub.publish(cmd)
             self.cmd_current = cmd
@@ -267,10 +276,15 @@ class PotentialFieldController(Node):
             self.stop_robot()
 
     def scale_velocities(self, linear, angular, max_vel):
+        """Scale velocities with separate limits"""
         if abs(angular) > np.pi/4:
-            return max_vel * 0.2, np.clip(angular, -max_vel, max_vel)
-        scale = max_vel / max(abs(linear), abs(angular), max_vel)
-        return linear * scale, angular * scale
+            return max_vel * 0.2, np.clip(angular, -self.angular_vel_max, self.angular_vel_max)
+        
+        # Scale linear and angular velocities separately
+        linear_scale = self.linear_vel_max / max(abs(linear), self.linear_vel_max)
+        angular_scale = self.angular_vel_max / max(abs(angular), self.angular_vel_max)
+        
+        return linear * linear_scale, angular * angular_scale
 
     def smooth_velocity(self, target_vel):
         """Smooth velocity transitions including reverse motion"""

@@ -8,54 +8,72 @@ import numpy as np
 class FrontierVisualizer:
     def __init__(self):
         self.marker_id = 0
-        self.frame_id = "map"  # Use map frame instead of odom
+        self.frame_id = "map"
         self.last_markers = {}
 
-    def create_frontier_markers(self, frontier_points, map_info, robot_position, selected_centroid=None, all_centroids=None):
+    def create_frontier_markers(self, frontier_points, map_info, robot_position, selected_centroid=None, all_centroids=None, cluster_labels=None):
         """Create visualization markers for frontiers and clusters"""
         marker_array = MarkerArray()
-        
-        # Use time 0 to ensure markers are always displayed
         stamp = rclpy.time.Time(seconds=0, nanoseconds=0).to_msg()
         
-        # Delete old markers first
+        # Delete old markers
         delete_marker = Marker()
         delete_marker.header.frame_id = self.frame_id
         delete_marker.header.stamp = stamp
         delete_marker.action = Marker.DELETEALL
         marker_array.markers.append(delete_marker)
 
-        # Create markers for all frontier points
-        if len(frontier_points) > 0:
-            points_marker = self._create_points_marker(frontier_points, map_info)
-            points_marker.header.frame_id = self.frame_id
-            points_marker.header.stamp = stamp
-            points_marker.lifetime.sec = 0
-            marker_array.markers.append(points_marker)
+        if len(frontier_points) > 0 and cluster_labels is not None:
+            # Create markers for unselected cluster points (red)
+            unselected_points = []
+            selected_points = []
             
-            # Add markers for all considered clusters first
-            if all_centroids is not None and len(all_centroids) > 0:
-                for i, centroid in enumerate(all_centroids):
-                    # Only skip if it's exactly the selected centroid
-                    if selected_centroid is not None and np.array_equal(centroid, selected_centroid):
-                        continue
-                        
-                    cluster_marker = self._create_cluster_marker(centroid, map_info, is_selected=False)
-                    cluster_marker.header.frame_id = self.frame_id
-                    cluster_marker.header.stamp = stamp
-                    cluster_marker.lifetime.sec = 0
-                    cluster_marker.ns = f"cluster_{i}"  # Add namespace to prevent ID conflicts
-                    marker_array.markers.append(cluster_marker)
+            # Sort points into selected and unselected based on cluster
+            for point, label in zip(frontier_points, cluster_labels):
+                if selected_centroid is not None:
+                    # Check if point belongs to selected cluster
+                    if np.array_equal(np.mean(frontier_points[cluster_labels == label], axis=0), selected_centroid):
+                        selected_points.append(point)
+                    else:
+                        unselected_points.append(point)
+                else:
+                    unselected_points.append(point)
             
-            # Add marker for selected cluster last (so it's on top)
-            if selected_centroid is not None:
-                selected_marker = self._create_cluster_marker(selected_centroid, map_info, is_selected=True)
+            # Create marker for unselected points
+            if unselected_points:
+                unselected_marker = self._create_points_marker(
+                    unselected_points, 
+                    map_info,
+                    ColorRGBA(r=1.0, g=0.0, b=0.0, a=0.5)  # Red
+                )
+                unselected_marker.header.frame_id = self.frame_id
+                unselected_marker.header.stamp = stamp
+                unselected_marker.lifetime.sec = 0
+                unselected_marker.ns = "unselected_points"
+                marker_array.markers.append(unselected_marker)
+            
+            # Create marker for selected points
+            if selected_points:
+                selected_marker = self._create_points_marker(
+                    selected_points, 
+                    map_info,
+                    ColorRGBA(r=0.0, g=1.0, b=0.0, a=0.9)  # Green
+                )
                 selected_marker.header.frame_id = self.frame_id
                 selected_marker.header.stamp = stamp
                 selected_marker.lifetime.sec = 0
-                selected_marker.ns = "selected_cluster"
+                selected_marker.ns = "selected_points"
                 marker_array.markers.append(selected_marker)
-
+            
+            # Add cross marker for selected centroid
+            if selected_centroid is not None:
+                cross_marker = self._create_cross_marker(selected_centroid, map_info)
+                cross_marker.header.frame_id = self.frame_id
+                cross_marker.header.stamp = stamp
+                cross_marker.lifetime.sec = 0
+                cross_marker.ns = "centroid_cross"
+                marker_array.markers.append(cross_marker)
+        
         return marker_array
 
     def _create_delete_marker(self, marker_id, namespace, stamp):
@@ -67,24 +85,25 @@ class FrontierVisualizer:
         marker.action = Marker.DELETE
         return marker
 
-    def _create_points_marker(self, frontier_points, map_info):
+    def _create_points_marker(self, points, map_info, color):
+        """Create marker for points with specified color"""
         marker = Marker()
         marker.type = Marker.POINTS
         marker.action = Marker.ADD
         marker.id = self.marker_id
         self.marker_id += 1
         
-        # Make points more visible
-        marker.scale.x = 0.08  # Slightly larger
+        # Point size
+        marker.scale.x = 0.08
         marker.scale.y = 0.08
-        marker.color = ColorRGBA(r=0.0, g=0.6, b=1.0, a=0.9)  # Brighter blue, more opaque
+        marker.color = color
         
         # Convert grid coordinates to world coordinates
-        for point in frontier_points:
+        for point in points:
             p = Point()
             p.x = point[1] * map_info.resolution + map_info.origin.position.x
             p.y = point[0] * map_info.resolution + map_info.origin.position.y
-            p.z = 0.1  # Slightly higher for better visibility
+            p.z = 0.1
             marker.points.append(p)
         
         return marker
@@ -108,30 +127,33 @@ class FrontierVisualizer:
         
         return marker
 
-    def _create_cluster_marker(self, centroid, map_info, is_selected=False):
-        """Create marker for cluster centroid"""
+
+
+    def _create_cross_marker(self, centroid, map_info, size=0.2, thickness=0.02):
+        """Create an X-shaped cross marker at the centroid"""
         marker = Marker()
-        marker.type = Marker.SPHERE
+        marker.type = Marker.LINE_LIST
         marker.action = Marker.ADD
         marker.id = self.marker_id
         self.marker_id += 1
         
-        # Larger size for better visibility
-        size = 0.4 if is_selected else 0.3
-        marker.scale.x = size
-        marker.scale.y = size
-        marker.scale.z = size
+        # Cross size and color
+        marker.scale.x = thickness  # Line thickness
+        marker.color = ColorRGBA(r=1.0, g=0.0, b=0.0, a=1.0)  # Bright red
         
-        # More visible colors
-        if is_selected:
-            marker.color = ColorRGBA(r=0.0, g=1.0, b=0.0, a=0.9)  # Bright green, more opaque
-        else:
-            marker.color = ColorRGBA(r=1.0, g=0.0, b=0.0, a=0.8)  # Bright red, more opaque
+        # Convert centroid to world coordinates
+        x = centroid[1] * map_info.resolution + map_info.origin.position.x
+        y = centroid[0] * map_info.resolution + map_info.origin.position.y
+        z = 0.15  # Height above ground
         
-        # Convert to world coordinates and raise height
-        marker.pose.position.x = centroid[1] * map_info.resolution + map_info.origin.position.x
-        marker.pose.position.y = centroid[0] * map_info.resolution + map_info.origin.position.y
-        marker.pose.position.z = 0.2  # Higher position for better visibility
-        marker.pose.orientation.w = 1.0
+        # Create X-shaped cross points (two diagonal lines)
+        p1 = Point(x=x-size/2, y=y-size/2, z=z)  # Bottom-left
+        p2 = Point(x=x+size/2, y=y+size/2, z=z)  # Top-right
+        p3 = Point(x=x-size/2, y=y+size/2, z=z)  # Top-left
+        p4 = Point(x=x+size/2, y=y-size/2, z=z)  # Bottom-right
+        
+        # Add diagonal lines
+        marker.points.extend([p1, p2])  # First diagonal
+        marker.points.extend([p3, p4])  # Second diagonal
         
         return marker

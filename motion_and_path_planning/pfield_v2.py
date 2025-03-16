@@ -23,9 +23,9 @@ class PotentialFieldController(Node):
 
     def setup_parameters(self):
         # Separate linear and angular velocity limits
-        self.linear_vel_max = 0.1
+        self.linear_vel_max = 0.3
         self.angular_vel_max = 0.3  # Higher angular velocity limit
-        self.linear_vel_slow = 0.05
+        self.linear_vel_slow = 0.15
         self.linear_vel_min = 0.01
         
         self.dist_threshold = 0.2 

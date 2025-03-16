@@ -99,11 +99,16 @@ class PoseExecutor(Node):
             self.current_index = 0
             self.executing = True
             self.waiting_for_trigger = False
+            
+            # Publish initial path information
+            progress_msg = f"Starting execution of {len(self.pose_list)} poses"
+            self.publish_progress(progress_msg)
+            
             # Print all received poses
             print("Received New Poses:")
             for i, pose in enumerate(self.pose_list):
                 x, y, theta = self.extract_pose_2d(pose)
-                print(f"Pose {i+1}: x={x}, y={y}, theta={theta}")
+                print(f"Pose {i+1}: x={x:.2f}, y={y:.2f}, theta={theta:.2f}")
             self.publish_current_pose()
 
     def has_path_changed(self, new_poses):

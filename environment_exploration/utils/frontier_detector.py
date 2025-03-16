@@ -39,8 +39,15 @@ class FrontierDetector:
             iterations=self.wall_thickness
         )
 
+        unknown_space_dilated=unknown_space.copy()
+        # unknown_space_dilated = ndimage.binary_dilation(
+        #     unknown_space, 
+        #     self.kernel,
+        #     iterations=5
+        # )
+
         # Find frontiers
-        frontier_cells = unknown_space & free_space_dilated & ~occupied_space_dilated
+        frontier_cells = unknown_space_dilated & free_space_dilated & ~occupied_space_dilated
         frontier_count = np.sum(frontier_cells)
         self.logger.info(f'Found {frontier_count} initial frontier cells')
 

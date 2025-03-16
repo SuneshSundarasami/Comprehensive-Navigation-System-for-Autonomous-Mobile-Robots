@@ -100,9 +100,31 @@ class FrontierExplorationNode(Node):
         """Handle pose execution progress"""
         self.get_logger().info(f'Progress update: {msg.data}')
         
-        if "All poses completed!" in msg.data:
+        if "Starting execution of" in msg.data:
+            # Extract number of poses from the message
+            num_poses = int(msg.data.split()[3])
+            self.get_logger().info(
+                f'\nPath Execution Started:'
+                f'\n- Total poses in path: {num_poses}'
+                f'\n- Current robot position: ({self.robot_position[0]:.2f}, {self.robot_position[1]:.2f})'
+                f'\n- Status: Beginning path traversal'
+            )
+        elif "Completed pose" in msg.data:
+            # Extract current pose and total poses
+            current, total = map(int, msg.data.split()[2].split('/'))
+            self.get_logger().info(
+                f'\nPath Progress Update:'
+                f'\n- Completed pose: {current} of {total}'
+                f'\n- Progress: {(current/total)*100:.1f}%'
+                f'\n- Current position: ({self.robot_position[0]:.2f}, {self.robot_position[1]:.2f})'
+            )
+        elif "All poses completed!" in msg.data:
+            self.get_logger().info(
+                f'\nPath Execution Completed:'
+                f'\n- Final position: ({self.robot_position[0]:.2f}, {self.robot_position[1]:.2f})'
+                f'\n- Status: Ready for next frontier'
+            )
             self.detect_and_publish_frontier()
-
 
     def detect_and_publish_frontier(self):
         """Detect and publish new frontier goal"""
@@ -110,8 +132,8 @@ class FrontierExplorationNode(Node):
             frontier_points = self.frontier_detector.detect_frontiers(self.latest_map)
 
             if len(frontier_points) > 0:
-                # Unpack all three return values
-                selected_centroid, score, all_centroids = self.goal_selector.select_goal(
+                # Handle new cluster_labels return value
+                selected_centroid, score, all_centroids, cluster_labels = self.goal_selector.select_goal(
                     frontier_points,
                     self.latest_map,
                     self.latest_map_info,
@@ -120,17 +142,18 @@ class FrontierExplorationNode(Node):
                 )
 
                 if selected_centroid is not None:
-                    # Visualize frontiers with all centroids
+                    # Pass cluster labels to visualization
                     markers = self.visualizer.create_frontier_markers(
                         frontier_points,
                         self.latest_map_info,
                         self.robot_position,
                         selected_centroid,
-                        all_centroids  # Pass all centroids for visualization
+                        all_centroids,
+                        cluster_labels
                     )
                     self.visualization_pub.publish(markers)
 
-                    # Publish goal
+                    # Publish goal with enhanced logging
                     goal = Pose2D()
                     goal.x = selected_centroid[1] * self.latest_map_info.resolution + self.latest_map_info.origin.position.x
                     goal.y = selected_centroid[0] * self.latest_map_info.resolution + self.latest_map_info.origin.position.y
@@ -138,9 +161,9 @@ class FrontierExplorationNode(Node):
 
                     self.goal_publisher.publish(goal)
                     self.executing = True
-                    self.get_logger().info(
-                        f'Published new frontier goal at ({goal.x:.2f}, {goal.y:.2f}) at distance {-score:.2f}m'
-                    )
+
+            else:
+                self.get_logger().info('No frontier points detected')
 
         except Exception as e:
             self.get_logger().error(f'Error detecting frontier: {str(e)}')

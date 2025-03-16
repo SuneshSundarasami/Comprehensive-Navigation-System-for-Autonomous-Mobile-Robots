@@ -63,7 +63,7 @@ class GoalSelector:
         """Select best frontier centroid based on distance and information gain."""
         try:
             if len(frontier_points) == 0:
-                return None, 0, []
+                return None, 0, [], None  # Added None for cluster_labels
 
             # Cluster the frontier points with adjusted parameters
             clustering = DBSCAN(
@@ -147,7 +147,7 @@ class GoalSelector:
             if not valid_centroids:
                 # If no other options, clear previous and allow reuse
                 self.previous_centroid = None
-                return None, 0, all_centroids  # Return all_centroids even if no valid ones
+                return None, 0, all_centroids, clustering.labels_  # Return all_centroids even if no valid ones
                 
             # Select best centroid
             best_idx = np.argmax(valid_scores)
@@ -156,11 +156,11 @@ class GoalSelector:
             # Store selected centroid for next iteration
             self.previous_centroid = selected_centroid.copy()
             
-            return selected_centroid, -valid_scores[best_idx], all_centroids  # Return all centroids
+            return selected_centroid, -valid_scores[best_idx], all_centroids, clustering.labels_
 
         except Exception as e:
             self.logger.error(f'Goal selection failed: {str(e)}')
-            return None, 0, []
+            return None, 0, [], None
 
     def _cluster_frontiers(self, frontier_points):
         """Simple clustering of frontier points."""

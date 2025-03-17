@@ -81,6 +81,11 @@ class FrontierExplorationNode(Node):
         self.spin_duration = 6.0  # Time to complete full rotation (seconds)
         self.spin_timer = None
 
+        # Add timeout parameters
+        self.goal_timeout = 120.0  # 2 minutes timeout
+        self.goal_start_time = None
+        self.create_timer(1.0, self.check_goal_timeout)  # Check timeout every second
+
     def get_robot_position(self):
         try:
             transform = self.tf_buffer.lookup_transform(
@@ -124,6 +129,8 @@ class FrontierExplorationNode(Node):
                 f'\n- Final position: ({self.robot_position[0]:.2f}, {self.robot_position[1]:.2f})'
                 f'\n- Status: Ready for next frontier'
             )
+            self.executing = False
+            self.goal_start_time = None  # Reset timeout
             self.detect_and_publish_frontier()
 
     def detect_and_publish_frontier(self):
@@ -132,7 +139,7 @@ class FrontierExplorationNode(Node):
             frontier_points = self.frontier_detector.detect_frontiers(self.latest_map)
 
             if len(frontier_points) > 0:
-                # Handle new cluster_labels return value
+                # Get centroid and cluster information
                 selected_centroid, score, all_centroids, cluster_labels = self.goal_selector.select_goal(
                     frontier_points,
                     self.latest_map,
@@ -142,26 +149,35 @@ class FrontierExplorationNode(Node):
                 )
 
                 if selected_centroid is not None:
-                    # Pass cluster labels to visualization
+                    # Create visualization markers
                     markers = self.visualizer.create_frontier_markers(
                         frontier_points,
                         self.latest_map_info,
                         self.robot_position,
-                        selected_centroid,
+                        selected_centroid,  # Use centroid for visualization
                         all_centroids,
                         cluster_labels
                     )
                     self.visualization_pub.publish(markers)
 
-                    # Publish goal with enhanced logging
+                    # Convert centroid to world coordinates and publish as goal
                     goal = Pose2D()
                     goal.x = selected_centroid[1] * self.latest_map_info.resolution + self.latest_map_info.origin.position.x
                     goal.y = selected_centroid[0] * self.latest_map_info.resolution + self.latest_map_info.origin.position.y
-                    goal.theta = 1.0
+                    goal.theta = 0.0
 
                     self.goal_publisher.publish(goal)
                     self.executing = True
-
+                    self.goal_start_time = self.get_clock().now()  # Start timeout timer
+                    
+                    self.get_logger().info(
+                        f'\nPublished new frontier goal:'
+                        f'\n- Centroid: ({goal.x:.2f}, {goal.y:.2f})'
+                        f'\n- Score: {score:.3f}'
+                        f'\n- Timeout: {self.goal_timeout} seconds'
+                    )
+                else:
+                    self.get_logger().warn('No valid centroid selected')
             else:
                 self.get_logger().info('No frontier points detected')
 
@@ -183,6 +199,25 @@ class FrontierExplorationNode(Node):
                 
         except Exception as e:
             self.get_logger().error(f'Error in map_callback: {str(e)}')
+
+    def check_goal_timeout(self):
+        """Check if current goal has timed out"""
+        if self.executing and self.goal_start_time is not None:
+            current_time = self.get_clock().now()
+            elapsed_time = (current_time - self.goal_start_time).nanoseconds / 1e9
+            
+            if elapsed_time > self.goal_timeout:
+                self.get_logger().warn(
+                    f'Goal timed out after {elapsed_time:.1f} seconds! '
+                    'Finding new frontier...'
+                )
+                self.executing = False
+                self.goal_start_time = None
+                # Stop the robot
+                stop_cmd = Twist()
+                self.cmd_vel_pub.publish(stop_cmd)
+                # Find new frontier
+                self.detect_and_publish_frontier()
 
 def main(args=None):
     rclpy.init(args=args)

@@ -19,6 +19,15 @@ class PathVisualizer(Node):
         """Receives the Path message and publishes markers for visualization."""
         marker_array = MarkerArray()
 
+        # First, add a deletion marker to clear previous markers
+        delete_marker = Marker()
+        delete_marker.header.frame_id = "odom"
+        delete_marker.header.stamp = self.get_clock().now().to_msg()
+        delete_marker.ns = "path_markers"
+        delete_marker.action = Marker.DELETEALL
+        marker_array.markers.append(delete_marker)
+
+        # Then add new markers for the current path
         for i, pose in enumerate(msg.poses):
             marker = Marker()
             marker.header.frame_id = "odom"
@@ -42,7 +51,7 @@ class PathVisualizer(Node):
             marker_array.markers.append(marker)
 
         self.marker_pub.publish(marker_array)
-        # self.get_logger().info(f'Published {len(marker_array.markers)} markers to RViz')
+        self.get_logger().debug(f'Published {len(msg.poses)} markers after clearing old path')
 
 def main(args=None):
     rclpy.init(args=args)
@@ -53,4 +62,3 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
-    

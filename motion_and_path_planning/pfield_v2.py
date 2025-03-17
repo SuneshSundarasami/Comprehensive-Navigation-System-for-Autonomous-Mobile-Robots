@@ -23,18 +23,26 @@ class PotentialFieldController(Node):
 
     def setup_parameters(self):
         # Separate linear and angular velocity limits
-        self.linear_vel_max = 0.3
-        self.angular_vel_max = 0.3  # Higher angular velocity limit
-        self.linear_vel_slow = 0.15
+        self.linear_vel_max = 0.5
+        self.angular_vel_max = 1.2  # Higher angular velocity limit
+        self.linear_vel_slow = 0.3
         self.linear_vel_min = 0.01
         
         self.dist_threshold = 0.2 
         self.angle_threshold = 0.1  
         self.slow_zone = 0.5
         
-        self.gain_attract = 1.5
-        self.gain_repulse = 1.3
-        self.obstacle_radius = 0.1
+        self.gain_attract = 1.0      
+        self.gain_repulse = 2.5      
+        self.obstacle_radius = 1.0   
+        self.emergency_stop_radius = 0.2  # Emergency stop distance
+        self.emergency_backup_speed = -0.1  # Speed for backing up
+        self.rotation_speed = 0.8  # Increased rotation speed
+        self.emergency_rotate_time = 2.0  # Time to rotate before trying again
+        self.emergency_start_time = None  # Track emergency maneuver start time
+        self.is_avoiding = False      
+        self.closest_obstacle = None  
+        self.closest_distance = float('inf')
         self.max_accel = 0.2
         
         # Keep minima detection parameters
@@ -103,11 +111,33 @@ class PotentialFieldController(Node):
         angles = np.arange(msg.angle_min, msg.angle_max, msg.angle_increment)
         ranges = np.array(msg.ranges[:len(angles)])
         
+        # Find closest obstacle
         valid_idx = ~np.isnan(ranges) & ~np.isinf(ranges)
-        angles, ranges = angles[valid_idx], ranges[valid_idx]
+        if np.any(valid_idx):
+            min_range = np.min(ranges[valid_idx])
+            min_idx = np.argmin(ranges[valid_idx])
+            min_angle = angles[valid_idx][min_idx]
+            
+            # Convert to Cartesian coordinates
+            self.closest_distance = min_range
+            self.closest_obstacle = np.array([
+                min_range * np.cos(min_angle),
+                min_range * np.sin(min_angle)
+            ])
+            
+            # Set emergency flag if too close
+            if min_range < self.emergency_stop_radius:
+                if not self.is_avoiding:
+                    self.get_logger().warn(f'Emergency! Obstacle detected at {min_range:.2f}m')
+                self.is_avoiding = True
+            elif min_range > self.emergency_stop_radius * 1.5:  # Add hysteresis
+                self.is_avoiding = False
         
-        x = ranges * np.cos(angles)
-        y = ranges * np.sin(angles)
+        # Normal obstacle processing for potential field
+        valid_ranges = ranges[valid_idx]
+        valid_angles = angles[valid_idx]
+        x = valid_ranges * np.cos(valid_angles)
+        y = valid_ranges * np.sin(valid_angles)
         obstacles = np.column_stack((x, y))
         
         self.calculate_repulsion(obstacles)
@@ -116,11 +146,23 @@ class PotentialFieldController(Node):
         try:
             self.force_repulse = np.zeros(2)
             for obs in obstacles:
-                dist = np.linalg.norm(self.pose_current['pos'] - obs)
+                # Vector from robot to obstacle
+                to_obstacle = obs - self.pose_current['pos']
+                dist = np.linalg.norm(to_obstacle)
+                
+                # Only consider obstacles within radius
                 if dist < self.obstacle_radius:
-                    force = self.gain_repulse * (1/dist - 1/self.obstacle_radius) * \
-                           (self.pose_current['pos'] - obs) / (dist**3)
+                    # Normalize direction vector
+                    direction = to_obstacle / (dist + 1e-6)
+                    
+                    # Calculate repulsive force (stronger at closer distances)
+                    force = -self.gain_repulse * (self.obstacle_radius - dist) * direction
                     self.force_repulse += force
+                    
+                    # Debug logging for close obstacles
+                    if dist < 0.3:  # Very close obstacles
+                        self.get_logger().warn(f'Close obstacle detected! Distance: {dist:.2f}m')
+                
         except Exception as e:
             self.get_logger().error(f'Repulsion calculation error: {str(e)}')
 
@@ -196,6 +238,13 @@ class PotentialFieldController(Node):
     def update_control(self):
         """Main control loop with state machine logic"""
         try:
+            # Check for emergency situation first
+            if self.is_avoiding:
+                if self.handle_emergency_rotation():
+                    self.get_logger().info("Emergency avoidance active")
+                    return
+
+            # Rest of the existing control logic
             cmd = Twist()
             
             # If in Allignment phase, only handle rotation
@@ -349,6 +398,52 @@ class PotentialFieldController(Node):
                 
         except Exception as e:
             self.get_logger().error(f"Debug info error: {str(e)}")
+
+    def handle_emergency_rotation(self):
+        """Handle emergency situations with stop, backup, and rotate behavior"""
+        if not self.is_avoiding:
+            self.emergency_start_time = None
+            return False
+            
+        current_time = self.get_clock().now()
+        if self.emergency_start_time is None:
+            self.emergency_start_time = current_time
+            
+        cmd = Twist()
+        
+        # First, back up for 1 second
+        time_in_emergency = (current_time - self.emergency_start_time).nanoseconds / 1e9
+        
+        if time_in_emergency < 1.0:  # Back up phase
+            cmd.linear.x = self.emergency_backup_speed
+            cmd.angular.z = 0.0
+            self.get_logger().info('Emergency: Backing up')
+        
+        elif time_in_emergency < self.emergency_rotate_time + 1.0:  # Rotation phase
+            cmd.linear.x = 0.0
+            
+            # Calculate rotation direction away from obstacle
+            if self.closest_obstacle is not None:
+                obstacle_angle = np.arctan2(self.closest_obstacle[1], self.closest_obstacle[0])
+                # Choose rotation direction (clockwise or counterclockwise)
+                if obstacle_angle > 0:
+                    cmd.angular.z = -self.rotation_speed
+                else:
+                    cmd.angular.z = self.rotation_speed
+                
+            self.get_logger().info(
+                f'Emergency rotation: distance={self.closest_distance:.2f}m, '
+                f'turning {cmd.angular.z:.2f} rad/s'
+            )
+        else:
+            # Reset emergency state after maneuver
+            self.is_avoiding = False
+            self.emergency_start_time = None
+            self.get_logger().info('Emergency maneuver completed')
+            return False
+        
+        self.cmd_vel_pub.publish(cmd)
+        return True
 
 def main(args=None):
     rclpy.init(args=args)

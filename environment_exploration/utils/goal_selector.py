@@ -3,15 +3,17 @@ from sklearn.cluster import DBSCAN
 
 class GoalSelector:
     def __init__(self, information_radius, min_distance, max_distance, logger=None):
-        self.max_distance = 10.0  # Maximum distance to consider
-        self.min_cluster_size = 5  # Increased minimum cluster size
-        self.clustering_eps = 3.0  # Reduced epsilon for tighter clusters
-        self.exploration_radius = 5  # Radius to check for unexplored cells
-        self.distance_weight = 0.8  # Weight for distance score
-        self.unexplored_weight = 0.2  # Weight for unexplored area score
+        self.max_distance = 10.0  
+        self.min_cluster_size = 15       # Increased minimum cluster size
+        self.clustering_eps = 4.0        # Increased epsilon for more coherent clusters
+        self.exploration_radius = 6      # Increased radius for better information gain assessment
+        self.distance_weight = 0.3       # Reduced weight for distance
+        self.unexplored_weight = 0.5     # Increased weight for unexplored area
+        self.obstacle_weight = 0.2       # Weight for obstacle clearance
         self.logger = logger 
-        self.previous_centroid = None  # Add this line to track previous selection
-        self.same_centroid_threshold = 2.0  # Distance threshold to consider centroids same
+        self.previous_centroid = None
+        self.same_centroid_threshold = 2.5  # Increased threshold
+        self.min_frontier_size = 20      # Minimum frontier size to consider
 
     def count_unexplored_cells(self, centroid, map_data):
         """Count unexplored cells in radius around centroid"""

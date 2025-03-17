@@ -24,8 +24,8 @@ class ParticleFilter(Node):
         self.motion_update_rate = self.get_parameter('motion_update_rate').value
         self.measurement_update_rate = self.get_parameter('measurement_update_rate').value
         
-        self.motion_noise = [0.1, 0.1, 0.1]
-        self.measurement_noise = 0.1
+        self.motion_noise = [0.01, 0.01, 0.01]
+        self.measurement_noise = 0.01
         self.resample_threshold = 0.5  # Threshold for effective particle ratio
         
         # Initialize parameters for measurement model
@@ -196,7 +196,7 @@ class ParticleFilter(Node):
             return
         
         # Scale velocities to match robot motion
-        velocity_scale = 0.35  # Reduce velocity magnitude
+        velocity_scale = 0.32  # Reduce velocity magnitude
         linear_velocity = self.latest_cmd_vel.linear.x * velocity_scale
         angular_velocity = self.latest_cmd_vel.angular.z * velocity_scale
         

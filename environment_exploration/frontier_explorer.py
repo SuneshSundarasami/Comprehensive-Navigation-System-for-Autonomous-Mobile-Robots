@@ -86,6 +86,19 @@ class FrontierExplorationNode(Node):
         self.goal_start_time = None
         self.create_timer(1.0, self.check_goal_timeout)  # Check timeout every second
 
+        # Add movement timeout parameters
+        self.movement_timeout = 10.0  # 10 seconds timeout for no movement
+        self.last_movement_time = self.get_clock().now()
+        self.create_timer(1.0, self.check_movement_timeout)
+        
+        # Subscribe to cmd_vel to monitor movement
+        self.cmd_vel_sub = self.create_subscription(
+            Twist,
+            'cmd_vel',
+            self.cmd_vel_callback,
+            10
+        )
+
     def get_robot_position(self):
         try:
             transform = self.tf_buffer.lookup_transform(
@@ -106,6 +119,8 @@ class FrontierExplorationNode(Node):
         self.get_logger().info(f'Progress update: {msg.data}')
         
         if "Starting execution of" in msg.data:
+            # Reset movement timer when starting new path
+            self.last_movement_time = self.get_clock().now()
             # Extract number of poses from the message
             num_poses = int(msg.data.split()[3])
             self.get_logger().info(
@@ -115,6 +130,8 @@ class FrontierExplorationNode(Node):
                 f'\n- Status: Beginning path traversal'
             )
         elif "Completed pose" in msg.data:
+            # Reset movement timer when completing poses
+            self.last_movement_time = self.get_clock().now()
             # Extract current pose and total poses
             current, total = map(int, msg.data.split()[2].split('/'))
             self.get_logger().info(
@@ -216,6 +233,34 @@ class FrontierExplorationNode(Node):
                 # Stop the robot
                 stop_cmd = Twist()
                 self.cmd_vel_pub.publish(stop_cmd)
+                # Find new frontier
+                self.detect_and_publish_frontier()
+
+    def cmd_vel_callback(self, msg):
+        """Monitor robot movement commands"""
+        if abs(msg.linear.x) > 0.01 or abs(msg.angular.z) > 0.01:
+            self.last_movement_time = self.get_clock().now()
+
+    def check_movement_timeout(self):
+        """Check if robot hasn't moved for too long"""
+        if self.executing:
+            current_time = self.get_clock().now()
+            elapsed_time = (current_time - self.last_movement_time).nanoseconds / 1e9
+            
+            if elapsed_time > self.movement_timeout:
+                self.get_logger().warn(
+                    f'Robot inactive for {elapsed_time:.1f} seconds! '
+                    'Canceling current goal and finding new frontier...'
+                )
+                # Stop the robot
+                stop_cmd = Twist()
+                self.cmd_vel_pub.publish(stop_cmd)
+                
+                # Reset states
+                self.executing = False
+                self.goal_start_time = None
+                self.last_movement_time = current_time
+                
                 # Find new frontier
                 self.detect_and_publish_frontier()
 

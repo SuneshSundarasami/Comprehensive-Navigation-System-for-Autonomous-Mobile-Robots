@@ -1,104 +1,122 @@
 from visualization_msgs.msg import Marker, MarkerArray
 from geometry_msgs.msg import Point
 from std_msgs.msg import ColorRGBA
-from builtin_interfaces.msg import Duration
 import rclpy
 import numpy as np
 
 class FrontierVisualizer:
-    def __init__(self):
+    def __init__(self,logger=None):
         self.marker_id = 0
         self.frame_id = "map"
-        self.last_markers = {}
+        self.logger = logger
 
-    def create_frontier_markers(self, frontier_points, map_info, robot_position, selected_centroid=None, all_centroids=None, cluster_labels=None):
-        """Create visualization markers for frontiers and clusters"""
+
+    def create_frontier_markers(self, frontier_points, map_info, robot_position, 
+                              selected_point=None, all_centroids=None, 
+                              cluster_labels=None):
+        """Create visualization markers for frontiers"""
         marker_array = MarkerArray()
-        stamp = rclpy.time.Time(seconds=0, nanoseconds=0).to_msg()
+        selected_cluster = -1  # Initialize selected_cluster
         
-        # Delete old markers
+        # Debug logging
+        if self.logger:
+            self.logger.info(
+                f'Creating frontier markers:'
+                f'\n- Frontier points: {len(frontier_points)}'
+                f'\n- Has clusters: {cluster_labels is not None}'
+                f'\n- Has selected point: {selected_point is not None}'
+            )
+
+        # Create delete marker
         delete_marker = Marker()
         delete_marker.header.frame_id = self.frame_id
-        delete_marker.header.stamp = stamp
+        delete_marker.header.stamp = rclpy.time.Time().to_msg()
         delete_marker.action = Marker.DELETEALL
+        delete_marker.id = 0
         marker_array.markers.append(delete_marker)
 
-        if len(frontier_points) > 0 and cluster_labels is not None:
-            # Create markers for unselected cluster points (red)
-            unselected_points = []
-            selected_points = []
+        if len(frontier_points) == 0:
+            if self.logger:
+                self.logger.warn('No frontier points to visualize')
+            return marker_array
+
+        # Handle clustering
+        if cluster_labels is not None:
+            unique_clusters = np.unique(cluster_labels[cluster_labels != -1])
             
-            # Sort points into selected and unselected based on cluster
-            for point, label in zip(frontier_points, cluster_labels):
-                if selected_centroid is not None:
-                    # Check if point belongs to selected cluster
-                    if np.array_equal(np.mean(frontier_points[cluster_labels == label], axis=0), selected_centroid):
-                        selected_points.append(point)
+            if self.logger:
+                self.logger.info(f'Processing {len(unique_clusters)} clusters')
+
+            # Single cluster case
+            if len(unique_clusters) == 1:
+                selected_cluster = unique_clusters[0]
+                if self.logger:
+                    self.logger.info('Single cluster detected - marking as selected')
+
+            # Multiple clusters case
+            elif selected_point is not None:
+                selected_point_idx = np.where(np.all(frontier_points == selected_point, axis=1))[0]
+                if len(selected_point_idx) > 0:
+                    selected_cluster = cluster_labels[selected_point_idx[0]]
+                    if self.logger:
+                        self.logger.info(f'Selected cluster identified: {selected_cluster}')
+
+            # Create markers for each cluster
+            for i, cluster_id in enumerate(unique_clusters):
+                cluster_mask = cluster_labels == cluster_id
+                cluster_points = frontier_points[cluster_mask]
+                
+                if len(cluster_points) > 0:
+                    if cluster_id == selected_cluster:
+                        color = ColorRGBA(r=0.0, g=1.0, b=0.0, a=0.9)  # Green
+                        if self.logger:
+                            self.logger.info(f'Marking cluster {cluster_id} as selected (green)')
                     else:
-                        unselected_points.append(point)
-                else:
-                    unselected_points.append(point)
-            
-            # Create marker for unselected points
-            if unselected_points:
-                unselected_marker = self._create_points_marker(
-                    unselected_points, 
-                    map_info,
-                    ColorRGBA(r=1.0, g=0.0, b=0.0, a=0.5)  # Red
-                )
-                unselected_marker.header.frame_id = self.frame_id
-                unselected_marker.header.stamp = stamp
-                unselected_marker.lifetime.sec = 0
-                unselected_marker.ns = "unselected_points"
-                marker_array.markers.append(unselected_marker)
-            
-            # Create marker for selected points
-            if selected_points:
-                selected_marker = self._create_points_marker(
-                    selected_points, 
-                    map_info,
-                    ColorRGBA(r=0.0, g=1.0, b=0.0, a=0.9)  # Green
-                )
-                selected_marker.header.frame_id = self.frame_id
-                selected_marker.header.stamp = stamp
-                selected_marker.lifetime.sec = 0
-                selected_marker.ns = "selected_points"
-                marker_array.markers.append(selected_marker)
-            
-            # Add cross marker for selected centroid
-            if selected_centroid is not None:
-                cross_marker = self._create_cross_marker(selected_centroid, map_info)
-                cross_marker.header.frame_id = self.frame_id
-                cross_marker.header.stamp = stamp
-                cross_marker.lifetime.sec = 0
-                cross_marker.ns = "centroid_cross"
-                marker_array.markers.append(cross_marker)
-        
+                        color = ColorRGBA(r=1.0, g=0.0, b=0.0, a=0.9)  # Red
+                        if self.logger:
+                            self.logger.debug(f'Marking cluster {cluster_id} as unselected (red)')
+                    
+                    marker = self._create_points_marker(cluster_points, map_info, color)
+                    marker.header.frame_id = self.frame_id
+                    marker.header.stamp = rclpy.time.Time().to_msg()
+                    marker.id = i + 1
+                    marker.ns = f"cluster_{cluster_id}"
+                    marker_array.markers.append(marker)
+
+        # Add selected point marker
+        if selected_point is not None:
+            cross = self._create_cross_marker(selected_point, map_info)
+            cross.header.frame_id = self.frame_id
+            cross.header.stamp = rclpy.time.Time().to_msg()
+            cross.id = len(marker_array.markers)
+            cross.ns = "selected_point"
+            marker_array.markers.append(cross)
+            if self.logger:
+                self.logger.info(f'Added cross marker at point {selected_point}')
+
+        # Final logging
+        if self.logger:
+            self.logger.info(
+                f'Visualization complete:'
+                f'\n- Created {len(marker_array.markers)} markers'
+                f'\n- Selected cluster: {selected_cluster}'
+                f'\n- Cross marker: {selected_point is not None}'
+            )
+
         return marker_array
 
-    def _create_delete_marker(self, marker_id, namespace, stamp):
+    def _create_points_marker(self, points, map_info, color):
+        """Create marker for points"""
         marker = Marker()
         marker.header.frame_id = self.frame_id
-        marker.header.stamp = stamp
-        marker.ns = namespace
-        marker.id = marker_id
-        marker.action = Marker.DELETE
-        return marker
-
-    def _create_points_marker(self, points, map_info, color):
-        """Create marker for points with specified color"""
-        marker = Marker()
         marker.type = Marker.POINTS
         marker.action = Marker.ADD
-        marker.id = self.marker_id
-        self.marker_id += 1
+        marker.pose.orientation.w = 1.0
         
-        # Point size
-        marker.scale.x = 0.08
-        marker.scale.y = 0.08
+        marker.scale.x = 0.05
+        marker.scale.y = 0.05
         marker.color = color
         
-        # Convert grid coordinates to world coordinates
         for point in points:
             p = Point()
             p.x = point[1] * map_info.resolution + map_info.origin.position.x
@@ -108,52 +126,25 @@ class FrontierVisualizer:
         
         return marker
 
-    def _create_centroid_marker(self, selected_centroid, map_info):
+    def _create_cross_marker(self, point, map_info, size=0.15, thickness=0.02):
+        """Create small red cross marker"""
         marker = Marker()
-        marker.type = Marker.SPHERE
-        marker.action = Marker.ADD
-        marker.id = self.marker_id
-        self.marker_id += 1
-        
-        marker.scale.x = 0.3
-        marker.scale.y = 0.3
-        marker.scale.z = 0.3
-        marker.color = ColorRGBA(r=1.0, g=0.0, b=0.0, a=1.0)
-        
-        marker.pose.position.x = selected_centroid[1] * map_info.resolution + map_info.origin.position.x
-        marker.pose.position.y = selected_centroid[0] * map_info.resolution + map_info.origin.position.y
-        marker.pose.position.z = 0.15
-        marker.pose.orientation.w = 1.0
-        
-        return marker
-
-
-
-    def _create_cross_marker(self, centroid, map_info, size=0.2, thickness=0.02):
-        """Create an X-shaped cross marker at the centroid"""
-        marker = Marker()
+        marker.header.frame_id = self.frame_id
         marker.type = Marker.LINE_LIST
         marker.action = Marker.ADD
-        marker.id = self.marker_id
-        self.marker_id += 1
+        marker.pose.orientation.w = 1.0
+        marker.scale.x = thickness
+        marker.color = ColorRGBA(r=1.0, g=0.0, b=0.0, a=1.0)  # Solid red
         
-        # Cross size and color
-        marker.scale.x = thickness  # Line thickness
-        marker.color = ColorRGBA(r=1.0, g=0.0, b=0.0, a=1.0)  # Bright red
+        x = point[1] * map_info.resolution + map_info.origin.position.x
+        y = point[0] * map_info.resolution + map_info.origin.position.y
+        z = 0.15
         
-        # Convert centroid to world coordinates
-        x = centroid[1] * map_info.resolution + map_info.origin.position.x
-        y = centroid[0] * map_info.resolution + map_info.origin.position.y
-        z = 0.15  # Height above ground
+        p1 = Point(x=x-size/2, y=y-size/2, z=z)
+        p2 = Point(x=x+size/2, y=y+size/2, z=z)
+        p3 = Point(x=x-size/2, y=y+size/2, z=z)
+        p4 = Point(x=x+size/2, y=y-size/2, z=z)
         
-        # Create X-shaped cross points (two diagonal lines)
-        p1 = Point(x=x-size/2, y=y-size/2, z=z)  # Bottom-left
-        p2 = Point(x=x+size/2, y=y+size/2, z=z)  # Top-right
-        p3 = Point(x=x-size/2, y=y+size/2, z=z)  # Top-left
-        p4 = Point(x=x+size/2, y=y-size/2, z=z)  # Bottom-right
-        
-        # Add diagonal lines
-        marker.points.extend([p1, p2])  # First diagonal
-        marker.points.extend([p3, p4])  # Second diagonal
+        marker.points.extend([p1, p2, p3, p4])
         
         return marker

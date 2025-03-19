@@ -1,33 +1,80 @@
 import numpy as np
 from sklearn.cluster import DBSCAN
+from nav_msgs.msg import OccupancyGrid
 
 class GoalSelector:
     def __init__(self, information_radius, min_distance, max_distance, logger=None):
-        self.max_distance = 10.0  
-        self.min_cluster_size = 15       # Increased minimum cluster size
-        self.clustering_eps = 4.0        # Increased epsilon for more coherent clusters
-        self.exploration_radius = 6      # Increased radius for better information gain assessment
-        self.distance_weight = 0.3       # Reduced weight for distance
-        self.unexplored_weight = 0.5     # Increased weight for unexplored area
-        self.obstacle_weight = 0.2       # Weight for obstacle clearance
-        self.logger = logger 
+        # Existing parameters
+        self.max_distance = max_distance
+        self.min_cluster_size = 15
+        self.clustering_eps = 4.0
+        self.exploration_radius = information_radius
+        self.distance_weight = 0.2
+        self.unexplored_weight = 0.6
+        self.obstacle_weight = 0.2
+        self.logger = logger
         self.previous_centroid = None
-        self.same_centroid_threshold = 2.5  # Increased threshold
-        self.min_frontier_size = 20      # Minimum frontier size to consider
+        self.same_centroid_threshold = 2.5
+        self.min_frontier_size = 20
+        
+        # Initialize clearance map attributes
+        self.latest_clearance_map = None
+        self.map_info = None
+        self.clearance_sub = None
+        
+        # Add blacklist parameters
+        self.failed_points = []  # Store points that failed
+        self.point_failure_threshold = 2.0  # Distance threshold to consider a point as "same"
+        self.logger = logger
+        self.logger.info('[Goal Selector] Goal selector initialized')
+
+    def initialize_clearance_subscriber(self, node):
+        """Initialize subscriber for clearance map"""
+        self.clearance_sub = node.create_subscription(
+            OccupancyGrid,
+            '/clearance_map',
+            self._on_clearance_map,
+            10
+        )
+        if self.logger:
+            self.logger.info('[Goal Selector] Initialized clearance map subscriber')
+
+    def _on_clearance_map(self, msg):
+        """Process incoming clearance map"""
+        try:
+            # Reshape clearance map data
+            height, width = msg.info.height, msg.info.width
+            clearance_data = np.array(msg.data).reshape((height, width))
+            
+            # Normalize to [0,1] range and store
+            self.latest_clearance_map = clearance_data / 100.0
+            self.map_info = msg.info
+            
+            if self.logger:
+                self.logger.debug(
+                    f'[Goal Selector] Updated clearance map {width}x{height}, '
+                    f'range: [{np.min(self.latest_clearance_map):.2f}, '
+                    f'{np.max(self.latest_clearance_map):.2f}]'
+                )
+                
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f'[Goal Selector] Error processing clearance map: {str(e)}')
 
     def count_unexplored_cells(self, centroid, map_data):
         """Count unexplored cells in radius around centroid"""
-        y, x = int(centroid[0]), int(centroid[1])
+        # Ensure integer coordinates
+        y, x = np.round(centroid).astype(np.int32)
         height, width = map_data.shape
         count = 0
         
+        radius = int(self.exploration_radius)
+        
         # Check cells in square around centroid
-        for i in range(max(0, y - self.exploration_radius), 
-                      min(height, y + self.exploration_radius + 1)):
-            for j in range(max(0, x - self.exploration_radius), 
-                         min(width, x + self.exploration_radius + 1)):
+        for i in range(max(0, y - radius), min(height, y + radius + 1)):
+            for j in range(max(0, x - radius), min(width, x + radius + 1)):
                 # Check if point is within circular radius
-                if ((i - y)**2 + (j - x)**2) <= self.exploration_radius**2:
+                if ((i - y)**2 + (j - x)**2) <= radius**2:
                     if map_data[i, j] == -1:  # Unexplored cell
                         count += 1
         
@@ -61,108 +108,182 @@ class GoalSelector:
         # Convert to score (closer to obstacles = lower score)
         return min_dist / max_check_radius
 
+    def find_best_clearance_point(self, cluster_points, clearance_map):
+        """Find the frontier point with highest clearance in the cluster"""
+        try:
+            if len(cluster_points) == 0 or clearance_map is None:
+                return None
+                
+            # Get clearance values for all points in cluster
+            clearance_values = []
+            for point in cluster_points:
+                y, x = int(point[0]), int(point[1])
+                if (0 <= y < clearance_map.shape[0] and 
+                    0 <= x < clearance_map.shape[1]):
+                    clearance_values.append(clearance_map[y, x])
+                else:
+                    clearance_values.append(0)
+                    
+            # Select point with highest clearance
+            best_idx = np.argmax(clearance_values)
+            return cluster_points[best_idx], clearance_values[best_idx]
+            
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f'[Goal Selector] Error finding best clearance point: {str(e)}')
+            return None, 0.0
+
+    def is_point_blacklisted(self, point, map_info):
+        """Check if a point is too close to any blacklisted point"""
+        if not self.failed_points:
+            return False
+            
+        point_world = self._to_world(point, map_info)
+        
+        for failed_point in self.failed_points:
+            distance = np.linalg.norm(point_world - failed_point)
+            if distance < self.point_failure_threshold:
+                if self.logger:
+                    self.logger.debug(
+                        f'[Goal Selector] Point ({point[0]}, {point[1]}) is near '
+                        f'blacklisted point at ({failed_point[0]:.2f}, {failed_point[1]:.2f})'
+                    )
+                return True
+        return False
+
+    def add_failed_point(self, world_point):
+        """Add a failed point to the blacklist (in world coordinates)"""
+        self.failed_points.append(np.array(world_point))
+        if self.logger:
+            self.logger.info(
+                f'[Goal Selector] Added point ({world_point[0]:.2f}, {world_point[1]:.2f}) '
+                f'to blacklist. Total blacklisted: {len(self.failed_points)}'
+            )
+
     def select_goal(self, frontier_points, map_data, map_info, robot_position, previous_goals=None):
-        """Select best frontier centroid based on distance and information gain."""
+        """Select best frontier using clearance information"""
+        self.logger.info(f'[Goal Selector] Selecting goal from {len(frontier_points)} frontiers')
         try:
             if len(frontier_points) == 0:
-                return None, 0, [], None  # Added None for cluster_labels
+                self.logger.warn('[Goal Selector] No frontier points available')
+                return None, 0, [], None
 
-            # Cluster the frontier points with adjusted parameters
+            # Handle edge case with few frontier points
+            if len(frontier_points) < self.min_cluster_size:
+                self.logger.info(
+                    f'[Goal Selector] Few frontier points ({len(frontier_points)}) - '
+                    'using direct point selection'
+                )
+                return self._handle_few_frontiers(
+                    frontier_points, 
+                    map_data, 
+                    map_info, 
+                    robot_position
+                )
+
+            # Try clustering
             clustering = DBSCAN(
-                eps=3.0,               # Smaller eps for more clusters
-                min_samples=5,         # Reasonable minimum points
-                metric='euclidean',
-                algorithm='ball_tree',
-                n_jobs=-1
+                eps=self.clustering_eps,
+                min_samples=self.min_cluster_size
             ).fit(frontier_points)
             
-            # Debug clustering results
-            labels = clustering.labels_
-            n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
-            n_noise = list(labels).count(-1)
-            
-            self.logger.info(f"DBSCAN found {n_clusters} clusters and {n_noise} noise points")
-            
-            # Get cluster labels and centroids
-            unique_labels = np.unique(clustering.labels_[clustering.labels_ != -1])
-            centroids = []
-            scores = []
-            
-            self.logger.info(f"Evaluating {len(unique_labels)} clusters:")
-            
-            # Store all valid centroids and scores
-            valid_centroids = []
-            valid_scores = []
-            all_centroids = []  # Store all centroids for visualization
-            
-            for label in unique_labels:
-                cluster_points = frontier_points[clustering.labels_ == label]
-                if len(cluster_points) < self.min_cluster_size:
-                    continue
-                    
-                centroid = np.mean(cluster_points, axis=0)
-                all_centroids.append(centroid)  # Add to all centroids list
-                
-                # Calculate obstacle proximity score
-                obstacle_score = self.calculate_obstacle_score(centroid, map_data)
-                if obstacle_score < 0.3:  # Skip if too close to obstacles
-                    self.logger.info(f"Skipping cluster - too close to obstacles (score: {obstacle_score:.2f})")
-                    continue
-                
-                # Convert centroid to world coordinates
-                world_x = centroid[1] * map_info.resolution + map_info.origin.position.x
-                world_y = centroid[0] * map_info.resolution + map_info.origin.position.y
-                
-                # Calculate metrics
-                distance = np.linalg.norm(robot_position - np.array([world_x, world_y]))
-                unexplored_count = self.count_unexplored_cells(centroid, map_data)
-                
-                # Skip if too far
-                if distance > self.max_distance:
-                    continue
-                    
-                # Calculate combined score including obstacle proximity
-                distance_score = 1.0 - (distance / self.max_distance)
-                unexplored_score = min(1.0, unexplored_count / (np.pi * self.exploration_radius**2))
-                score = (0.3 * distance_score + 
-                        0.4 * unexplored_score + 
-                        0.3 * obstacle_score)  # Added obstacle score component
-                
-                # Check if this centroid is too close to the previous one
-                if self.previous_centroid is not None:
-                    prev_dist = np.linalg.norm(centroid - self.previous_centroid)
-                    if prev_dist < self.same_centroid_threshold:
-                        self.logger.info(
-                            f"Skipping centroid at ({world_x:.2f}, {world_y:.2f}) - too close to previous"
-                        )
-                        continue
-                
-                self.logger.info(
-                    f"Cluster at ({world_x:.2f}, {world_y:.2f}): "
-                    f"distance={distance:.1f}, unexplored={unexplored_count}, "
-                    f"obstacle_score={obstacle_score:.2f}, total_score={score:.3f}"
+            # Check if clustering succeeded
+            valid_clusters = np.unique(clustering.labels_[clustering.labels_ != -1])
+            if len(valid_clusters) == 0:
+                self.logger.info('[Goal Selector] Clustering failed - trying direct selection')
+                return self._handle_few_frontiers(
+                    frontier_points, 
+                    map_data, 
+                    map_info, 
+                    robot_position
                 )
+
+            clusters = self._cluster_frontiers(frontier_points)
+            if not clusters:
+                return None, 0, [], None
+
+            # Store cluster labels for visualization
+            cluster_labels = clustering.labels_
+
+            best_point = None
+            best_score = float('-inf')
+            all_centroids = []
+
+            self.logger.info(f"\n[Goal Selector] Evaluating {len(clusters)} clusters:")
+            self.logger.info("[Goal Selector] Cluster | Size | Centroid (y,x) | Candidate (y,x) | Unexpl | Clear | Dist | Score")
+            self.logger.info("[Goal Selector] " + "-" * 80)
+            
+            for cluster_idx, cluster in enumerate(clusters):
+                # Calculate cluster centroid
+                centroid = np.mean(cluster, axis=0)
+                all_centroids.append(centroid)
+
+                if self.latest_clearance_map is not None:
+                    best_point_in_cluster, clearance_value = self.find_best_clearance_point(
+                        cluster, self.latest_clearance_map
+                    )
+                    if best_point_in_cluster is not None:
+                        candidate_point = best_point_in_cluster
+                    else:
+                        candidate_point = np.round(centroid).astype(np.int32)
+                        clearance_value = 0
+                else:
+                    candidate_point = np.round(centroid).astype(np.int32)
+                    clearance_value = 0
+
+                # Skip blacklisted points
+                if self.is_point_blacklisted(candidate_point, map_info):
+                    status = "BLACKLISTED"
+                    if self.logger:
+                        self.logger.debug(f'[Goal Selector] Skipping blacklisted point: {candidate_point}')
+                    continue
+
+                # Calculate score components
+                world_pos = self._to_world(candidate_point, map_info)
+                distance = np.linalg.norm(robot_position - world_pos)
+                unexplored = self.count_unexplored_cells(candidate_point, map_data)
                 
-                valid_centroids.append(centroid)
-                valid_scores.append(score)
+                # Combined score
+                score = (self.unexplored_weight * unexplored / 100.0 + 
+                        self.obstacle_weight * clearance_value - 
+                        self.distance_weight * distance / self.max_distance)
+
+                # Format and log cluster info in one line
+                cluster_info = (
+                    f"{cluster_idx+1:^7} | "
+                    f"{len(cluster):4} | "
+                    f"({centroid[0]:5.1f},{centroid[1]:5.1f}) | "
+                    f"({candidate_point[0]:3},{candidate_point[1]:3}) | "
+                    f"{unexplored:6} | "
+                    f"{clearance_value:5.2f} | "
+                    f"{distance:4.1f} | "
+                    f"{score:5.3f}"
+                )
+                self.logger.info("[Goal Selector] " + cluster_info + (" <= BEST" if score > best_score else ""))
+
+                if score > best_score:
+                    best_score = score
+                    best_point = candidate_point.copy()
+
+            if best_point is not None:
+                self.logger.info("[Goal Selector] " + "-" * 80)
+                self.logger.info(f"[Goal Selector] Selected: Cluster with point ({best_point[0]}, {best_point[1]}) - Score: {best_score:.3f}")
+            else:
+                self.logger.warn("[Goal Selector] No suitable candidate point found")
             
-            if not valid_centroids:
-                # If no other options, clear previous and allow reuse
-                self.previous_centroid = None
-                return None, 0, all_centroids, clustering.labels_  # Return all_centroids even if no valid ones
-                
-            # Select best centroid
-            best_idx = np.argmax(valid_scores)
-            selected_centroid = valid_centroids[best_idx]
-            
-            # Store selected centroid for next iteration
-            self.previous_centroid = selected_centroid.copy()
-            
-            return selected_centroid, -valid_scores[best_idx], all_centroids, clustering.labels_
+            # Return cluster labels as the fourth parameter
+            return best_point, best_score, all_centroids, cluster_labels
 
         except Exception as e:
-            self.logger.error(f'Goal selection failed: {str(e)}')
+            self.logger.error(f'[Goal Selector] Goal selection failed: {str(e)}')
             return None, 0, [], None
+
+    def _to_world(self, point, map_info):
+        """Convert grid coordinates to world coordinates"""
+        return np.array([
+            point[1] * map_info.resolution + map_info.origin.position.x,
+            point[0] * map_info.resolution + map_info.origin.position.y
+        ])
 
     def _cluster_frontiers(self, frontier_points):
         """Simple clustering of frontier points."""
@@ -184,3 +305,75 @@ class GoalSelector:
             clusters.append(cluster_points)
 
         return clusters
+
+    def _handle_few_frontiers(self, frontier_points, map_data, map_info, robot_position):
+        """Handle case when there are too few frontier points for clustering"""
+        best_point = None
+        best_score = float('-inf')
+        
+        self.logger.info("[Goal Selector] Evaluating individual frontier points:")
+        self.logger.info("[Goal Selector] Point (y,x) | Unexpl | Clear | Dist | Score")
+        self.logger.info("[Goal Selector] " + "-" * 60)
+
+        for point in frontier_points:
+            # Skip blacklisted points
+            if self.is_point_blacklisted(point, map_info):
+                continue
+
+            # Get clearance value
+            if self.latest_clearance_map is not None:
+                y, x = int(point[0]), int(point[1])
+                if (0 <= y < self.latest_clearance_map.shape[0] and 
+                    0 <= x < self.latest_clearance_map.shape[1]):
+                    clearance_value = self.latest_clearance_map[y, x]
+                else:
+                    clearance_value = 0
+            else:
+                clearance_value = 0
+
+            # Calculate score components
+            world_pos = self._to_world(point, map_info)
+            distance = np.linalg.norm(robot_position - world_pos)
+            unexplored = self.count_unexplored_cells(point, map_data)
+            
+            # Combined score with adjusted weights for direct selection
+            score = (
+                1.2 * self.unexplored_weight * unexplored / 100.0 +  # Increased weight
+                0.8 * self.obstacle_weight * clearance_value -       # Reduced weight
+                1.0 * self.distance_weight * distance / self.max_distance
+            )
+
+            # Log point info
+            point_info = (
+                f"({point[0]:3},{point[1]:3}) | "
+                f"{unexplored:6} | "
+                f"{clearance_value:5.2f} | "
+                f"{distance:4.1f} | "
+                f"{score:5.3f}"
+            )
+            self.logger.info("[Goal Selector] " + point_info + (" <= BEST" if score > best_score else ""))
+
+            if score > best_score:
+                best_score = score
+                best_point = point.copy()
+
+        if best_point is not None:
+            self.logger.info("[Goal Selector] " + "-" * 60)
+            self.logger.info(
+                f"[Goal Selector] Selected point ({best_point[0]}, {best_point[1]}) "
+                f"with score: {best_score:.3f}"
+            )
+            # Create single cluster labels
+            cluster_labels = np.zeros(len(frontier_points), dtype=np.int32)
+            all_centroids = [np.mean(frontier_points, axis=0)]
+            
+            self.logger.info(
+                "[Goal Selector] Treating all points as single cluster:"
+                f"\n- Cluster size: {len(frontier_points)}"
+                f"\n- Centroid: ({all_centroids[0][0]:.1f}, {all_centroids[0][1]:.1f})"
+            )
+            
+            return best_point, best_score, all_centroids, cluster_labels
+        else:
+            self.logger.warn("[Goal Selector] No suitable point found in direct selection")
+            return None, 0, [], None

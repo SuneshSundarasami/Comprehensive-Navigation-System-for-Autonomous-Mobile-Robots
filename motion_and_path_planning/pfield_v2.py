@@ -3,29 +3,38 @@ from rclpy.node import Node
 import numpy as np
 import tf_transformations
 import tf2_ros  
+import tf2_ros
+import tf2_geometry_msgs
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import String
 from geometry_msgs.msg import Twist, Pose2D
 from std_srvs.srv import Trigger
+from geometry_msgs.msg import Point, Quaternion, PoseStamped, TransformStamped
 
 class PotentialFieldController(Node):
     def __init__(self):
         super().__init__('potential_field_node')
         
         self.setup_parameters()
-        self.setup_transforms()
         self.setup_communications()
         self.initialize_state()
         
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+        
+        self.create_timer(0.1, self.update_robot_pose)  # 10Hz updates
         self.create_timer(1.0, self.publish_debug_info)
+        
         self.get_logger().info('Potential field controller initialized')
+        self.last_valid_transform = None
+        self.last_transform_time = None
 
     def setup_parameters(self):
         # Separate linear and angular velocity limits
-        self.linear_vel_max = 0.5
+        self.linear_vel_max = 0.8
         self.angular_vel_max = 1.2  # Higher angular velocity limit
-        self.linear_vel_slow = 0.3
+        self.linear_vel_slow = 0.4
         self.linear_vel_min = 0.01
         
         self.dist_threshold = 0.2 
@@ -36,8 +45,10 @@ class PotentialFieldController(Node):
         self.gain_repulse = 2.5      
         self.obstacle_radius = 1.0   
         self.emergency_stop_radius = 0.2  # Emergency stop distance
+        self.emergency_hysteresis = 0.3  # Must be clear by this distance to resume
+        self.obstacle_arc = np.pi/3  # Consider obstacles within ±60° arc in front
         self.emergency_backup_speed = -0.1  # Speed for backing up
-        self.rotation_speed = 0.8  # Increased rotation speed
+        self.rotation_speed = 0.4  # Increased rotation speed
         self.emergency_rotate_time = 2.0  # Time to rotate before trying again
         self.emergency_start_time = None  # Track emergency maneuver start time
         self.is_avoiding = False      
@@ -56,16 +67,11 @@ class PotentialFieldController(Node):
         self.is_escaping = False
         self.escape_start_time = None
 
-    def setup_transforms(self):
-        self.tf_buffer = tf2_ros.Buffer()
-        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
-
     def setup_communications(self):
         self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         self.debug_pub = self.create_publisher(String, 'pfield_debug', 10)
         
         self.create_subscription(Pose2D, 'end_pose', self.on_goal_received, 10)
-        self.create_subscription(Odometry, '/odom', self.on_odom_received, 10)
         self.create_subscription(LaserScan, '/scan', self.on_scan_received, 10)
         
         self.status_srv = self.create_service(Trigger, 'get_pfield_status', self.handle_status_request)
@@ -78,69 +84,144 @@ class PotentialFieldController(Node):
         self.cmd_current = Twist()
         self.status = "Waiting for goal pose"
 
+    def update_robot_pose(self):
+        """Get current pose from tf transform with robust timing handling"""
+        try:
+            # Get latest transform without timestamp
+            now = rclpy.time.Time()
+            transform = self.tf_buffer.lookup_transform_full(
+                target_frame='map',
+                target_time=now,
+                source_frame='base_link',
+                source_time=now,
+                fixed_frame='map',
+                timeout=rclpy.duration.Duration(seconds=0.1)
+            )
+            
+            # Update robot pose in map frame
+            self.pose_current['pos'] = np.array([
+                transform.transform.translation.x,
+                transform.transform.translation.y
+            ])
+            
+            # Add smoothing for stability
+            if not hasattr(self, 'last_pose'):
+                self.last_pose = self.pose_current['pos'].copy()
+            
+            # Apply exponential smoothing
+            alpha = 0.3  # Smoothing factor
+            smoothed_pos = (1 - alpha) * self.last_pose + alpha * self.pose_current['pos']
+            
+            # Update poses with smoothed values
+            self.last_pose = smoothed_pos.copy()
+            self.pose_current['pos'] = smoothed_pos
+            
+            # Extract yaw from quaternion
+            q = transform.transform.rotation
+            _, _, yaw = tf_transformations.euler_from_quaternion([q.x, q.y, q.z, q.w])
+            self.pose_current['angle'] = yaw
+            
+            # Update control if we have a goal
+            if not np.isnan(self.pose_goal['pos'][0]):
+                if not self.check_goal_reached():
+                    self.update_control()
+                
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, 
+                tf2_ros.ExtrapolationException) as e:
+            if not hasattr(self, '_last_tf_error_time') or \
+               (self.get_clock().now() - self._last_tf_error_time).nanoseconds / 1e9 > 5.0:
+                self.get_logger().warn(
+                    f'Transform lookup failed: {str(e)}\n'
+                    f'Current pose: {self.pose_current["pos"] if hasattr(self, "pose_current") else "None"}'
+                )
+                self._last_tf_error_time = self.get_clock().now()
+
     def on_goal_received(self, msg):
+        """Handle new goal directly in map frame with duplicate detection"""
+        new_goal_pos = np.array([msg.x, msg.y])
+        
+        # Check if this is actually a new goal
+        if hasattr(self, 'pose_goal') and not np.isnan(self.pose_goal['pos'][0]):
+            # Compare with current goal
+            pos_diff = np.linalg.norm(self.pose_goal['pos'] - new_goal_pos)
+            angle_diff = abs(self.pose_goal['angle'] - msg.theta)
+            
+            # If goal is very similar to current goal, ignore it
+            if pos_diff < 0.01 and angle_diff < 0.01:
+                return
+        
+        # Update goal if it's new
         self.pose_goal = {
-            'pos': np.array([msg.x, msg.y]),
+            'pos': new_goal_pos,
             'angle': msg.theta
         }
         self.status = "Moving to goal"
-        self.get_logger().info(f"New goal: ({msg.x:.2f}, {msg.y:.2f}, {msg.theta:.2f})")
-
-    def on_odom_received(self, msg):
-        if np.isnan(self.pose_goal['pos'][0]):
-            return
-
-        self.pose_current['pos'] = np.array([
-            msg.pose.pose.position.x,
-            msg.pose.pose.position.y
-        ])
         
-        _, _, yaw = tf_transformations.euler_from_quaternion([
-            msg.pose.pose.orientation.x, msg.pose.pose.orientation.y,
-            msg.pose.pose.orientation.z, msg.pose.pose.orientation.w
-        ])
-        self.pose_current['angle'] = yaw
-        
-        if not self.check_goal_reached():
-            self.update_control()
+        # Log only for new goals
+        self.get_logger().info(
+            f"New goal received in map frame: ({msg.x:.2f}, {msg.y:.2f}, {msg.theta:.2f})"
+        )
 
     def on_scan_received(self, msg):
+        """Process laser scan data directly in map frame"""
         if np.isnan(self.pose_goal['pos'][0]):
             return
 
-        angles = np.arange(msg.angle_min, msg.angle_max, msg.angle_increment)
-        ranges = np.array(msg.ranges[:len(angles)])
-        
-        # Find closest obstacle
-        valid_idx = ~np.isnan(ranges) & ~np.isinf(ranges)
-        if np.any(valid_idx):
-            min_range = np.min(ranges[valid_idx])
-            min_idx = np.argmin(ranges[valid_idx])
-            min_angle = angles[valid_idx][min_idx]
+        try:
+            angles = np.arange(msg.angle_min, msg.angle_max, msg.angle_increment)
+            ranges = np.array(msg.ranges[:len(angles)])
             
-            # Convert to Cartesian coordinates
-            self.closest_distance = min_range
-            self.closest_obstacle = np.array([
-                min_range * np.cos(min_angle),
-                min_range * np.sin(min_angle)
-            ])
+            # Find obstacles in forward arc
+            forward_arc_mask = np.abs(angles) < self.obstacle_arc/2
+            forward_ranges = ranges[forward_arc_mask]
+            forward_angles = angles[forward_arc_mask]
             
-            # Set emergency flag if too close
-            if min_range < self.emergency_stop_radius:
-                if not self.is_avoiding:
-                    self.get_logger().warn(f'Emergency! Obstacle detected at {min_range:.2f}m')
-                self.is_avoiding = True
-            elif min_range > self.emergency_stop_radius * 1.5:  # Add hysteresis
+            # Filter out invalid readings
+            valid_mask = ~np.isnan(forward_ranges) & ~np.isinf(forward_ranges)
+            valid_ranges = forward_ranges[valid_mask]
+            valid_angles = forward_angles[valid_mask]
+            
+            if len(valid_ranges) > 0:
+                min_range = np.min(valid_ranges)
+                min_idx = np.argmin(valid_ranges)
+                min_angle = valid_angles[min_idx]
+                
+                # Convert to Cartesian coordinates
+                self.closest_distance = min_range
+                self.closest_obstacle = np.array([
+                    min_range * np.cos(min_angle),
+                    min_range * np.sin(min_angle)
+                ])
+                
+                # Emergency handling with hysteresis
+                if min_range < self.emergency_stop_radius:
+                    if not self.is_avoiding:
+                        self.get_logger().warn(
+                            f'Emergency! Obstacle at {min_range:.2f}m, '
+                            f'angle: {np.degrees(min_angle):.1f}°'
+                        )
+                    self.is_avoiding = True
+                elif min_range > self.emergency_stop_radius + self.emergency_hysteresis:
+                    if self.is_avoiding:
+                        self.get_logger().info('Path clear, resuming normal operation')
+                    self.is_avoiding = False
+            else:
+                # No valid readings in forward arc
                 self.is_avoiding = False
-        
-        # Normal obstacle processing for potential field
-        valid_ranges = ranges[valid_idx]
-        valid_angles = angles[valid_idx]
-        x = valid_ranges * np.cos(valid_angles)
-        y = valid_ranges * np.sin(valid_angles)
-        obstacles = np.column_stack((x, y))
-        
-        self.calculate_repulsion(obstacles)
+                self.closest_distance = float('inf')
+                self.closest_obstacle = None
+                
+            # Process obstacles for potential field
+            all_valid_mask = ~np.isnan(ranges) & ~np.isinf(ranges)
+            x = ranges[all_valid_mask] * np.cos(angles[all_valid_mask])
+            y = ranges[all_valid_mask] * np.sin(angles[all_valid_mask])
+            obstacles = np.column_stack((x, y))
+            
+            # Calculate repulsion directly without transform check
+            self.calculate_repulsion(obstacles)
+            
+        except Exception as e:
+            self.get_logger().error(f'Scan processing error: {str(e)}')
 
     def calculate_repulsion(self, obstacles):
         try:
@@ -159,9 +240,6 @@ class PotentialFieldController(Node):
                     force = -self.gain_repulse * (self.obstacle_radius - dist) * direction
                     self.force_repulse += force
                     
-                    # Debug logging for close obstacles
-                    if dist < 0.3:  # Very close obstacles
-                        self.get_logger().warn(f'Close obstacle detected! Distance: {dist:.2f}m')
                 
         except Exception as e:
             self.get_logger().error(f'Repulsion calculation error: {str(e)}')
@@ -236,90 +314,80 @@ class PotentialFieldController(Node):
         return cmd
 
     def update_control(self):
-        """Main control loop with state machine logic"""
+        """Control loop working directly in map frame with improved orientation control"""
         try:
-            # Check for emergency situation first
-            if self.is_avoiding:
-                if self.handle_emergency_rotation():
-                    self.get_logger().info("Emergency avoidance active")
-                    return
-
-            # Rest of the existing control logic
-            cmd = Twist()
-            
-            # If in Allignment phase, only handle rotation
-            if self.status == "Alligning orientation":
-                angle_error = self.pose_goal['angle'] - self.pose_current['angle']
-                angle_error = np.arctan2(np.sin(angle_error), np.cos(angle_error))
-                
-                cmd.linear.x = 0.0  # Pure rotation
-                cmd.angular.z = np.clip(angle_error * 2.0, -self.angular_vel_max, self.angular_vel_max)
-                
-                self.cmd_vel_pub.publish(cmd)
-                self.cmd_current = cmd
-                return
-                
-            # Regular motion control
+            # Calculate goal vector in map frame
             to_goal = self.pose_goal['pos'] - self.pose_current['pos']
             dist = np.linalg.norm(to_goal)
             
-            # Calculate direct heading to goal
+            cmd = Twist()
+            
+            # Handle emergency situations first
+            if self.is_avoiding:
+                if self.handle_emergency_rotation():
+                    return
+            
+            # Calculate angles in map frame
             goal_heading = np.arctan2(to_goal[1], to_goal[0])
             heading_error = goal_heading - self.pose_current['angle']
             heading_error = np.arctan2(np.sin(heading_error), np.cos(heading_error))
             
-            # Calculate forces
-            force_attract = self.gain_attract * to_goal / dist
-            self.force_total = force_attract + self.force_repulse
-            
-            # Check if path is clear
-            path_is_clear = np.linalg.norm(self.force_repulse) < 0.1
-            
-            # Check for local minima and execute escape if needed
-            if not self.is_escaping and self.check_local_minima():
-                escape_cmd = self.escape_local_minima()
-                if escape_cmd:
-                    self.cmd_vel_pub.publish(escape_cmd)
-                    self.cmd_current = escape_cmd
-                    return
-            
-            # Forward motion control
-            if abs(heading_error) > np.pi/3:  # Large heading error
-                # Pure rotation for large heading errors
+            # Near goal, focus on final orientation
+            if dist < self.dist_threshold:
+                # Use goal orientation instead of heading
+                orient_error = self.pose_goal['angle'] - self.pose_current['angle']
+                orient_error = np.arctan2(np.sin(orient_error), np.cos(orient_error))
+                
+                # Pure rotation when aligning
                 cmd.linear.x = 0.0
-                cmd.angular.z = np.clip(heading_error * 2.0, -self.angular_vel_max, self.angular_vel_max)
-            elif abs(heading_error) < 0.1 and path_is_clear:
-                # Direct forward motion when well-aligned
-                cmd.linear.x = self.linear_vel_max
-                if dist < self.slow_zone:
-                    # Modified velocity scaling for smoother approach
-                    progress = dist / self.slow_zone
-                    cmd.linear.x = max(
-                        self.linear_vel_min,
-                        self.linear_vel_max * progress
-                    )
-                cmd.angular.z = np.clip(heading_error * 2.0, -self.angular_vel_max, self.angular_vel_max)
+                cmd.angular.z = np.clip(
+                    orient_error * 1.5,  # Proportional control for orientation
+                    -self.angular_vel_max,
+                    self.angular_vel_max
+                )
+                
+                self.get_logger().info(
+                    f'Aligning orientation. Error: {np.degrees(orient_error):.1f}°'
+                )
             else:
-                # Normal potential field motion
-                vel_mag = np.linalg.norm(self.force_total)
-                vel_ang = np.arctan2(self.force_total[1], self.force_total[0])
+                # Normal motion to goal
+                # Calculate attractive force
+                force_attract = self.gain_attract * to_goal / (dist + 1e-6)
+                self.force_total = force_attract + self.force_repulse
                 
-                # Maintain higher minimum velocity
-                max_vel = self.linear_vel_max
-                if dist < self.slow_zone:
-                    progress = dist / self.slow_zone
-                    max_vel = max(
-                        self.linear_vel_min,
-                        self.linear_vel_max * progress
+                force_magnitude = np.linalg.norm(self.force_total)
+                if force_magnitude > 0:
+                    # Scale velocities based on distance and heading
+                    if dist < self.slow_zone:
+                        target_vel = self.linear_vel_slow
+                    else:
+                        target_vel = self.linear_vel_max
+                    
+                    # Scale linear velocity based on heading error
+                    cos_error = np.cos(heading_error)
+                    cmd.linear.x = target_vel * max(0.0, cos_error)
+                    cmd.linear.x = self.smooth_velocity(cmd.linear.x)
+                    
+                    # Angular velocity for alignment
+                    cmd.angular.z = np.clip(
+                        heading_error * 2.0,
+                        -self.angular_vel_max,
+                        self.angular_vel_max
                     )
-                
-                linear, angular = self.scale_velocities(vel_mag, heading_error, max_vel)
-                cmd.linear.x = linear
-                cmd.angular.z = angular
             
+            # Ensure we're publishing non-zero commands
+            if abs(cmd.linear.x) < 0.001 and abs(cmd.angular.z) < 0.001:
+                self.get_logger().warn('Zero velocity command generated!')
+            
+            # Publish command
             self.cmd_vel_pub.publish(cmd)
             self.cmd_current = cmd
-                
+            
+            self.get_logger().debug(
+                f'Sending velocities - Linear: {cmd.linear.x:.2f} m/s, '
+                f'Angular: {cmd.angular.z:.2f} rad/s'
+            )
+            
         except Exception as e:
             self.get_logger().error(f'Control update error: {str(e)}')
             self.stop_robot()

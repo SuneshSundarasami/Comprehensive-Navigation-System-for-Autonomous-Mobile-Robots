@@ -9,9 +9,9 @@ class GoalSelector:
         self.min_cluster_size = 15
         self.clustering_eps = 4.0
         self.exploration_radius = information_radius
-        self.distance_weight = 0.2
-        self.unexplored_weight = 0.6
-        self.obstacle_weight = 0.2
+        self.distance_weight = 0.8
+        self.unexplored_weight = 0.15
+        self.obstacle_weight = 0.05
         self.logger = logger
         self.previous_centroid = None
         self.same_centroid_threshold = 2.5
@@ -22,8 +22,8 @@ class GoalSelector:
         self.map_info = None
         self.clearance_sub = None
         
-        # Add blacklist parameters
-        self.failed_points = []  # Store points that failed
+        # Change blacklist to single point
+        self.failed_point = None  # Store only one failed point
         self.point_failure_threshold = 2.0  # Distance threshold to consider a point as "same"
         self.logger = logger
         self.logger.info('[Goal Selector] Goal selector initialized')
@@ -134,30 +134,29 @@ class GoalSelector:
             return None, 0.0
 
     def is_point_blacklisted(self, point, map_info):
-        """Check if a point is too close to any blacklisted point"""
-        if not self.failed_points:
+        """Check if a point is too close to the failed point"""
+        if self.failed_point is None:
             return False
             
         point_world = self._to_world(point, map_info)
+        distance = np.linalg.norm(point_world - self.failed_point)
         
-        for failed_point in self.failed_points:
-            distance = np.linalg.norm(point_world - failed_point)
-            if distance < self.point_failure_threshold:
-                if self.logger:
-                    self.logger.debug(
-                        f'[Goal Selector] Point ({point[0]}, {point[1]}) is near '
-                        f'blacklisted point at ({failed_point[0]:.2f}, {failed_point[1]:.2f})'
-                    )
-                return True
+        if distance < self.point_failure_threshold:
+            if self.logger:
+                self.logger.debug(
+                    f'[Goal Selector] Point ({point[0]}, {point[1]}) is near '
+                    f'failed point at ({self.failed_point[0]:.2f}, {self.failed_point[1]:.2f})'
+                )
+            return True
         return False
 
     def add_failed_point(self, world_point):
-        """Add a failed point to the blacklist (in world coordinates)"""
-        self.failed_points.append(np.array(world_point))
+        """Store the failed point (in world coordinates)"""
+        self.failed_point = np.array(world_point)
         if self.logger:
             self.logger.info(
-                f'[Goal Selector] Added point ({world_point[0]:.2f}, {world_point[1]:.2f}) '
-                f'to blacklist. Total blacklisted: {len(self.failed_points)}'
+                f'[Goal Selector] Updated failed point to '
+                f'({world_point[0]:.2f}, {world_point[1]:.2f})'
             )
 
     def select_goal(self, frontier_points, map_data, map_info, robot_position, previous_goals=None):

@@ -32,6 +32,7 @@ setup(
             f'pfieldmodel = {motion_planner_module}.potential_field_implementation:main',
             f'pfieldmodel2 = {motion_planner_module}.pfield_v2:main',
             f'astar = {motion_planner_module}.a_star_path_planner:main',
+            f'tf_republisher = {motion_planner_module}.tf_republisher:main',
             f'clearance_map_generator = {motion_planner_module}.clearance_map_generator:main',
             f'pose_exec = {motion_planner_module}.pose_execuetor:main',
             f'path_vis = {motion_planner_module}.path_visualizer:main',

@@ -11,6 +11,7 @@ Panels:
         - /Map1
         - /Path1
         - /MarkerArray1
+        - /Path2
       Splitter Ratio: 0.5
     Tree Height: 460
   - Class: rviz_common/Selection
@@ -356,9 +357,17 @@ Visualization Manager:
       Enabled: true
       Name: MarkerArray
       Namespaces:
-        centroid_cross: true
-        selected_points: true
-        unselected_points: true
+        cluster_0: true
+        cluster_1: true
+        cluster_2: true
+        cluster_3: true
+        cluster_4: true
+        cluster_5: true
+        cluster_6: true
+        cluster_7: true
+        cluster_8: true
+        cluster_9: true
+        selected_point: true
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -370,7 +379,7 @@ Visualization Manager:
       Enabled: true
       Name: MarkerArray
       Namespaces:
-        path_markers: true
+        path_visualization: true
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -411,6 +420,34 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /particle_estimate
+      Value: true
+    - Alpha: 1
+      Buffer Length: 1
+      Class: rviz_default_plugins/Path
+      Color: 224; 27; 36
+      Enabled: true
+      Head Diameter: 0.30000001192092896
+      Head Length: 0.20000000298023224
+      Length: 0.30000001192092896
+      Line Style: Lines
+      Line Width: 0.029999999329447746
+      Name: Path
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Pose Color: 255; 85; 255
+      Pose Style: None
+      Radius: 0.029999999329447746
+      Shaft Diameter: 0.10000000149011612
+      Shaft Length: 0.10000000149011612
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /original_path
       Value: true
   Enabled: true
   Global Options:
@@ -458,25 +495,25 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 8.083593368530273
+      Distance: 14.096057891845703
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 0.3178081214427948
-        Y: -1.3485114574432373
-        Z: -0.5529758930206299
+        X: 0.3118753433227539
+        Y: 1.809161901473999
+        Z: -0.5530802607536316
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 1.304796576499939
+      Pitch: 1.5697963237762451
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz)
-      Yaw: 3.0153942108154297
+      Yaw: 3.1653947830200195
     Saved: ~
 Window Geometry:
   Displays:

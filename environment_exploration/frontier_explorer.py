@@ -44,9 +44,13 @@ class FrontierExplorationNode(Node):
             self.map_callback,
             10)
 
-        # TF listener
-        self.tf_buffer = tf2_ros.Buffer()
-        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+        # Add robot position subscriber
+        self.create_subscription(
+            PoseStamped,
+            'robot_position',
+            self.on_robot_position,
+            10
+        )
 
         # Add progress subscriber
         self.progress_sub = self.create_subscription(
@@ -59,10 +63,7 @@ class FrontierExplorationNode(Node):
         # Initialize utilities
         
         # self.visualizer.set_logger(self.get_logger())
-        self.frontier_detector = FrontierDetector(
-            self.min_frontier_size,
-            self.clustering_eps
-        )
+        self.frontier_detector = FrontierDetector()
         self.goal_selector = GoalSelector(
             information_radius=5.0,
             min_distance=0.5,
@@ -86,12 +87,12 @@ class FrontierExplorationNode(Node):
         self.spin_timer = None
 
         # Add timeout parameters
-        self.goal_timeout = 120.0  # 2 minutes timeout
+        self.goal_timeout = 20.0  # 2 minutes timeout
         self.goal_start_time = None
         self.create_timer(1.0, self.check_goal_timeout)  # Check timeout every second
 
         # Add movement timeout parameters
-        self.movement_timeout = 10.0  # 10 seconds timeout for no movement
+        self.movement_timeout =20.0  # 10 seconds timeout for no movement
         self.last_movement_time = self.get_clock().now()
         self.create_timer(1.0, self.check_movement_timeout)
         
@@ -110,32 +111,42 @@ class FrontierExplorationNode(Node):
         # Add movement timeout tracking
         self.consecutive_movement_timeouts = 0
         self.max_movement_timeouts = 2
-        self.movement_timeout = 5.0  # 5 seconds timeout for no movement
+        self.movement_timeout = 20.0  # 5 seconds timeout for no movement
 
         self.last_position = None  # Add this to track the last position
-        self.position_threshold = 1  # Threshold for position change (in meters)
-
-        # Add position update timer
-        self.create_timer(0.1, self.update_position)  # Update position at 10Hz
+        self.position_threshold = 0.5  # Threshold for position change (in meters)
 
         # Add exploration progress monitor
         self.progress_monitor = ExplorationProgress(self.get_logger())
         self.create_timer(1.0, self.check_mapping_progress)
 
-    def get_robot_position(self):
+    def on_robot_position(self, msg):
+        """Handle robot position updates from tf_republisher"""
         try:
-            transform = self.tf_buffer.lookup_transform(
-                'map',
-                'base_link',
-                rclpy.time.Time())
+            # Update robot position
             self.robot_position = np.array([
-                transform.transform.translation.x,
-                transform.transform.translation.y
+                msg.pose.position.x,
+                msg.pose.position.y
             ])
-            return True
+            
+            if self.last_position is not None:
+                # Calculate distance moved
+                distance_moved = np.linalg.norm(self.robot_position - self.last_position)
+                
+                if distance_moved > 0.01:  # Only log if moved more than 1cm
+                    self.get_logger().debug(
+                        f'Robot movement:\n'
+                        f'- Distance: {distance_moved:.3f}m\n'
+                        f'- From: ({self.last_position[0]:.2f}, {self.last_position[1]:.2f})\n'
+                        f'- To: ({self.robot_position[0]:.2f}, {self.robot_position[1]:.2f})'
+                    )
+                    # Reset movement timeout when significant movement detected
+                    self.last_movement_time = self.get_clock().now()
+            
+            self.last_position = self.robot_position.copy()
+            
         except Exception as e:
-            self.get_logger().warning(f'Failed to get robot position: {str(e)}')
-            return False
+            self.get_logger().error(f'Error processing robot position: {str(e)}')
 
     def progress_callback(self, msg):
         """Handle pose execution progress"""
@@ -176,10 +187,6 @@ class FrontierExplorationNode(Node):
     def detect_and_publish_frontier(self):
         """Detect and publish new frontier goal with visualization"""
         try:
-            if not self.get_robot_position():
-                self.get_logger().warn('Could not get robot position')
-                return
-
             if self.latest_map is None:
                 self.get_logger().warn('No map data available')
                 return
@@ -200,9 +207,21 @@ class FrontierExplorationNode(Node):
 
                 if selected_point is not None:
                     # Update progress monitor with selected cluster points
-                    if labels is not None:
-                        selected_mask = labels == labels[np.where(np.all(frontier_points == selected_point, axis=1))[0][0]]
-                        self.progress_monitor.update_cluster(frontier_points[selected_mask])
+                    if labels is not None and len(frontier_points) > 0:
+                        try:
+                            # Find the matching points in the frontier array
+                            matching_points = np.where(np.all(frontier_points == selected_point, axis=1))[0]
+                            if len(matching_points) > 0:
+                                selected_label = labels[matching_points[0]]
+                                selected_mask = labels == selected_label
+                                self.progress_monitor.update_cluster(frontier_points[selected_mask])
+                                self.get_logger().debug(
+                                    f'Updated cluster monitoring:'
+                                    f'\n- Selected point: ({selected_point[0]}, {selected_point[1]})'
+                                    f'\n- Cluster size: {np.sum(selected_mask)}'
+                                )
+                        except Exception as e:
+                            self.get_logger().warn(f'Failed to update progress monitor: {str(e)}')
 
                     # Create and publish visualization markers
                     markers = self.visualizer.create_frontier_markers(
@@ -253,7 +272,12 @@ class FrontierExplorationNode(Node):
                 self.get_logger().info('No frontier points detected')
 
         except Exception as e:
-            self.get_logger().error(f'Error in detect_and_publish_frontier: {str(e)}')
+            self.get_logger().error(
+                f'Error in detect_and_publish_frontier:'
+                f'\n- Error: {str(e)}'
+                f'\n- Frontier points: {len(frontier_points) if "frontier_points" in locals() else "N/A"}'
+                f'\n- Selected point: {selected_point if "selected_point" in locals() else "N/A"}'
+            )
 
     def select_closest_frontier(self, frontier_points):
         """Select the closest frontier point to the robot."""
@@ -354,6 +378,17 @@ class FrontierExplorationNode(Node):
                     f'Robot inactive for {elapsed_time:.1f} seconds! '
                     f'Consecutive movement timeouts: {self.consecutive_movement_timeouts}'
                 )
+
+                # Get the current goal in world coordinates
+                if len(self.previous_goals) > 0:
+                    last_goal = self.previous_goals[-1]
+                    # Update the single failed point
+                    self.goal_selector.add_failed_point(np.array(last_goal))
+                    self.get_logger().info(
+                        f'Updated failed goal point:'
+                        f'\n- Position: ({last_goal[0]:.2f}, {last_goal[1]:.2f})'
+                    )
+
                 # Stop the robot
                 stop_cmd = Twist()
                 self.cmd_vel_pub.publish(stop_cmd)
@@ -365,24 +400,6 @@ class FrontierExplorationNode(Node):
                 
                 # Find new frontier
                 self.detect_and_publish_frontier()
-
-    def update_position(self):
-        """Continuously update and monitor robot position"""
-        if self.get_robot_position():  # Using existing get_robot_position method
-            current_position = np.array([self.robot_position[0], self.robot_position[1]])
-            
-            if self.last_position is not None:
-                # Calculate distance moved
-                distance_moved = np.linalg.norm(current_position - self.last_position)
-                
-                if distance_moved > 0.01:  # Only log if moved more than 1cm
-                    self.get_logger().debug(
-                        f'Robot moved {distance_moved:.3f}m:'
-                        f'\n- From: ({self.last_position[0]:.2f}, {self.last_position[1]:.2f})'
-                        f'\n- To: ({current_position[0]:.2f}, {current_position[1]:.2f})'
-                    )
-            
-            self.last_position = current_position
 
     def check_mapping_progress(self):
         """Check if current cluster area is sufficiently mapped"""

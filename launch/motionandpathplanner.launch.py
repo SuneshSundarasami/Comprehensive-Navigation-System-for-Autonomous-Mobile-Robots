@@ -5,6 +5,12 @@ def generate_launch_description():
     return LaunchDescription([
         Node(
             package='amr_project_amr_t04',
+            executable='tf_republisher',
+            name='tf_republisher',
+            output='screen'
+        ),
+        Node(
+            package='amr_project_amr_t04',
             executable='clearance_map_generator',
             name='clearance_map_generator',
             output='screen'

@@ -4,7 +4,7 @@ import os
 
 def generate_launch_description():
     map_path = '/home/sunesh/ros2_ws/src/amr_project_amr_t04/my_map'
-    map_name = 'closed_walls_world_map'
+    map_name = 'outside_map'
     
     return LaunchDescription([
         # Static Transform Publisher for map to odom using YAML origin values
@@ -12,9 +12,9 @@ def generate_launch_description():
             package='tf2_ros',
             executable='static_transform_publisher',
             name='map_to_odom_tf',
-            arguments=['0', '0',  '0', '0', '0', '0', 'map', 'odom']
+            # arguments=['0.137569506191043', '0.084991597573247',  '0', '0', '0.022683054398351', '0.999742706421588', 'odom', 'map']
+            arguments=['0', '0',  '0', '0', '0', '0.999742706421588', 'map', 'odom']
         ),
-        
         # Map Server Node
         Node(
             package='nav2_map_server',

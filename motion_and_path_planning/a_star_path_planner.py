@@ -22,6 +22,21 @@ from geometry_msgs.msg import Point, Quaternion, PoseStamped, TransformStamped
 class AStarPathPlanner(Node):
     def __init__(self):
         super().__init__('astar_path_planner')
+        
+        # Remove tf buffer and listener since we'll use the position topic
+        # self.tf_buffer = tf2_ros.Buffer()
+        # self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+        
+        # Add subscriber for robot position
+        self.create_subscription(
+            PoseStamped,
+            'robot_position',
+            self.on_robot_position,
+            10
+        )
+        
+        # Remove the pose update timer
+        # self.create_timer(0.1, self.update_robot_pose)
 
         # Initialize state variables first
         self.map_data = None
@@ -33,6 +48,7 @@ class AStarPathPlanner(Node):
         self.clearance_map = None
         self.map_processed = False
         self.latest_map = None
+        self.dilation_radius=8
 
         # Set up QoS profile
         map_qos = QoSProfile(
@@ -43,58 +59,133 @@ class AStarPathPlanner(Node):
         )
 
         # Create subscribers and publishers
-        self.map_sub = self.create_subscription(OccupancyGrid, '/map', self.map_callback, map_qos)
+        self.map_sub = self.create_subscription(OccupancyGrid, '/map', self.map_callback, 10)
         self.path_pub = self.create_publisher(Path, '/planned_path', 10)
-        self.clearance_pub = self.create_publisher(OccupancyGrid, '/clearance_map', 10)
         self.goal_sub = self.create_subscription(Pose2D, 'goal_pose', self.goal_callback, 10)
 
-        # Add clearance map subscription
+        # Add clearance map subscription with appropriate QoS
+        clearance_qos = QoSProfile(
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=1,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL
+        )
         self.clearance_sub = self.create_subscription(
             OccupancyGrid,
             '/clearance_map',
             self.clearance_callback,
             10
         )
+        self.clearance_map = None
 
         # Add transform buffer and listener
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
         
         # Add timer for pose updates
-        self.create_timer(0.1, self.update_robot_pose)  # 10Hz updates
+        # self.create_timer(0.1, self.update_robot_pose)  # 10Hz updates
+
+        self.alt_path_pub = self.create_publisher(Path, '/alternative_path', 10)
+        self.original_path_pub = self.create_publisher(Path, '/original_path', 10)
 
         self.get_logger().info('A* Path Planner Node initialized')
 
+        # Add flags for goal processing
+        self.pending_goal = None
+        self.waiting_for_map = False
+        self.pending_goal_timestamp = None
+
+    def dilate_obstacles(self, raw_map, dilation_radius=8):
+        """Increase wall thickness by dilating obstacles."""
+        try:
+            # Create kernel for dilation
+            kernel = np.ones((2 * dilation_radius + 1, 2 * dilation_radius + 1), np.uint8)
+            
+            # Create binary map of obstacles (100 -> 1, rest -> 0)
+            obstacle_map = (raw_map == 100).astype(np.uint8)
+            
+            # Dilate obstacles
+            dilated = cv2.dilate(obstacle_map, kernel, iterations=1)
+            
+            # Create new map with dilated obstacles
+            dilated_map = raw_map.copy()
+            dilated_map[dilated == 1] = 100
+            
+            self.get_logger().debug(
+                f'Dilated obstacles:'
+                f'\n- Original obstacles: {np.sum(raw_map == 100)}'
+                f'\n- After dilation: {np.sum(dilated_map == 100)}'
+                f'\n- Dilation radius: {dilation_radius}'
+            )
+            
+            return dilated_map
+            
+        except Exception as e:
+            self.get_logger().error(f'Error dilating obstacles: {str(e)}')
+            return raw_map
+
     def map_callback(self, msg):
-        """Receives the map and constructs a graph for A*."""
-        if self.map_processed:  # Skip processing if already done
-            return
-        
+        """Receives the map and processes pending goals"""
         self.map_info = msg.info
         self.latest_map = np.array(msg.data).reshape((msg.info.height, msg.info.width))
-        raw_map = self.latest_map.copy()
         
-        # Clear robot footprint from occupancy grid
-        raw_map = self.clear_robot_footprint(raw_map)
-        
-        self.clearance_map = self.compute_clearance_map(raw_map)
-        self.graph = self.create_graph(raw_map)
-        self.map_processed = True
-
-        # Try planning initial path with hardcoded end pose
-        if not self.initial_path_planned and self.current_pose:
-            self.plan_path()
-            self.initial_path_planned = True
+        # Process pending goal if exists
+        if self.waiting_for_map and self.pending_goal is not None:
+            self.get_logger().info('Processing pending goal with new map data')
+            
+            # Update the map and graph
+            raw_map = self.dilate_obstacles(self.latest_map.copy(), dilation_radius=self.dilation_radius)
+            raw_map = self.clear_robot_footprint(raw_map)
+            
+            if self.clearance_map is not None:
+                temp_map=raw_map.copy()
+                self.clearance_map= self.compute_clearance_map(raw_map)
+                
+                self.graph = self.create_graph(raw_map)
+                self.map_processed = True
+                raw_map=temp_map
+                # Set the goal and plan path
+                self.end_pose = self.pending_goal
+                self.pending_goal = None
+                self.waiting_for_map = False
+                self.clearance_map= self.compute_clearance_map(raw_map)
+                self.plan_path()
+        else:
+            # Regular map processing
+            raw_map = self.dilate_obstacles(self.latest_map.copy(), dilation_radius=self.dilation_radius)
+            raw_map = self.clear_robot_footprint(raw_map)
+            
+            if self.clearance_map is not None:
+                self.graph = self.create_graph(raw_map)
+                self.map_processed = True
 
     def clearance_callback(self, msg):
         """Handle incoming clearance map"""
-        self.clearance_map = np.array(msg.data).reshape(
-            (msg.info.height, msg.info.width)
-        ) / 100.0  # Convert back to float
-        
-        # Process map if we haven't yet
-        if not self.map_processed and self.latest_map is not None:
-            self.process_map()
+        try:
+            width, height = msg.info.width, msg.info.height
+            # Convert from occupancy grid scale [0,100] back to [0,1]
+            self.clearance_map = np.array(msg.data).reshape((height, width)) / 100.0
+            
+            self.get_logger().debug(
+                f'Received clearance map {width}x{height}, '
+                f'range: [{np.min(self.clearance_map):.2f}, '
+                f'{np.max(self.clearance_map):.2f}]'
+            )
+            
+            # Process map if we have it but haven't yet
+            if not self.map_processed and self.latest_map is not None:
+                raw_map = self.latest_map.copy()
+                raw_map = self.clear_robot_footprint(raw_map)
+                self.graph = self.create_graph(raw_map)
+                self.map_processed = True
+                
+                # Try planning initial path
+                if not self.initial_path_planned and self.current_pose:
+                    self.plan_path()
+                    self.initial_path_planned = True
+                    
+        except Exception as e:
+            self.get_logger().error(f'Error processing clearance map: {str(e)}')
 
     def process_map(self):
         """Process map and create graph once we have both map and clearance data"""
@@ -241,24 +332,23 @@ class AStarPathPlanner(Node):
         self.get_logger().info(f'Graph created with {len(G.nodes)} nodes and {len(G.edges)} edges')
         return G
 
-    def update_robot_pose(self):
-        """Get current pose from tf transform"""
+    def on_robot_position(self, msg):
+        """Handle robot position updates from tf_republisher"""
         try:
-            transform = self.tf_buffer.lookup_transform(
-                'map',
-                'base_link',
-                rclpy.time.Time(),
-                rclpy.duration.Duration(seconds=0.1)
-            )
-            
-            # Extract position from transform
-            new_pose = (
-                transform.transform.translation.x,
-                transform.transform.translation.y
-            )
-            
             # Update current pose
-            self.current_pose = new_pose
+            self.current_pose = (
+                msg.pose.position.x,
+                msg.pose.position.y
+            )
+            
+            # Extract orientation if needed
+            q = msg.pose.orientation
+            _, _, yaw = tf_transformations.euler_from_quaternion(
+                [q.x, q.y, q.z, q.w]
+            )
+            
+            # Store orientation if needed
+            # self.current_orientation = yaw
             
             # Plan initial path when ready
             if (not self.initial_path_planned and self.map_processed and 
@@ -266,12 +356,8 @@ class AStarPathPlanner(Node):
                 self.plan_path()
                 self.initial_path_planned = True
                 
-        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, 
-                tf2_ros.ExtrapolationException) as e:
-            if not hasattr(self, '_last_tf_error_time') or \
-               (self.get_clock().now() - self._last_tf_error_time).nanoseconds / 1e9 > 5.0:
-                self.get_logger().warn(f'Transform lookup failed: {str(e)}')
-                self._last_tf_error_time = self.get_clock().now()
+        except Exception as e:
+            self.get_logger().error(f'Error processing robot position: {str(e)}')
 
     def world_to_grid(self, x, y):
         """Converts world coordinates to grid coordinates."""
@@ -285,44 +371,101 @@ class AStarPathPlanner(Node):
         y = gy * self.map_info.resolution + self.map_info.origin.position.y
         return x, y
 
-
-
-
-    def extract_turns(self, path_grid, angle_threshold=30, distance_threshold=1.0):
-        """Extracts key waypoints (turns) from the path based on significant direction changes and distance."""
-        key_points = []
-        
+    def extract_turns(self, path_grid, angle_threshold=30, min_segment_length=2):
+        """Extracts key waypoints using Douglas-Peucker algorithm and angle-based filtering."""
         if len(path_grid) < 3:
-            return path_grid  # Return the path as is if there are fewer than 3 points
-        
-        # Convert path to NumPy array for easier manipulation
-        path_grid = np.array(path_grid)
-        
-        # Add the first point as a starting point
-        key_points.append(tuple(path_grid[0]))
+            return path_grid
 
-        # Calculate the differences between consecutive points (x, y)
-        diffs = np.diff(path_grid, axis=0)
+        # Convert path to numpy array
+        path = np.array(path_grid)
         
-        # Calculate the angles of each segment in degrees
-        angles = np.degrees(np.arctan2(diffs[:, 1], diffs[:, 0]))
+        # Step 1: Douglas-Peucker simplification
+        def point_line_distance(point, start, end):
+            if np.all(start == end):
+                return np.linalg.norm(point - start)
+            line_vec = end - start
+            point_vec = point - start
+            line_len = np.linalg.norm(line_vec)
+            line_unitvec = line_vec / line_len
+            point_proj_len = np.dot(point_vec, line_unitvec)
+            point_proj = line_unitvec * point_proj_len
+            point_proj_point = start + point_proj
+            return np.linalg.norm(point - point_proj_point)
 
-        # Check for significant turns (angle difference above the threshold)
-        for i in range(1, len(angles)):
-            angle_diff = abs(angles[i] - angles[i - 1])
-            angle_diff = np.mod(angle_diff + 180, 360) - 180  # Wrap angle difference to [-180, 180]
+        def douglas_peucker(points, epsilon):
+            if len(points) <= 2:
+                return points
             
-            # Calculate the distance between consecutive points
-            distance = np.linalg.norm(path_grid[i] - path_grid[i - 1])
+            dmax = 0
+            index = 0
             
-            # If the angle difference exceeds the threshold and the distance is large enough, it's a turn
-            if abs(angle_diff) > angle_threshold and distance > distance_threshold:
-                key_points.append(tuple(path_grid[i]))
+            for i in range(1, len(points) - 1):
+                d = point_line_distance(points[i], points[0], points[-1])
+                if dmax < d:
+                    index = i
+                    dmax = d
+            
+            if dmax > epsilon:
+                left = douglas_peucker(points[:index + 1], epsilon)
+                right = douglas_peucker(points[index:], epsilon)
+                return np.vstack((left[:-1], right))
+            else:
+                return np.vstack((points[0], points[-1]))
 
-        # Add the last point as the endpoint
-        key_points.append(tuple(path_grid[-1]))
+        # Apply Douglas-Peucker simplification
+        simplified_path = douglas_peucker(path, epsilon=2.0)
         
-        return key_points
+        # Step 2: Angle-based filtering
+        key_points = [tuple(simplified_path[0])]
+        current_direction = None
+        
+        for i in range(1, len(simplified_path) - 1):
+            prev_point = simplified_path[i-1]
+            current_point = simplified_path[i]
+            next_point = simplified_path[i+1]
+            
+            # Calculate vectors
+            vec1 = current_point - prev_point
+            vec2 = next_point - current_point
+            
+            # Calculate angle between vectors
+            angle = np.degrees(
+                np.arctan2(vec2[1], vec2[0]) - 
+                np.arctan2(vec1[1], vec1[0])
+            )
+            angle = (angle + 180) % 360 - 180  # Normalize to [-180, 180]
+            
+            # Calculate segment lengths
+            segment1_length = np.linalg.norm(vec1)
+            segment2_length = np.linalg.norm(vec2)
+            
+            # Add point if there's a significant turn and segments are long enough
+            if (abs(angle) > angle_threshold and 
+                segment1_length > min_segment_length and 
+                segment2_length > min_segment_length):
+                key_points.append(tuple(current_point))
+        
+        # Always add the last point
+        key_points.append(tuple(simplified_path[-1]))
+        
+        # Step 3: Post-process to ensure minimum distance between points
+        final_points = [key_points[0]]
+        for i in range(1, len(key_points)):
+            dist = np.linalg.norm(
+                np.array(key_points[i]) - 
+                np.array(final_points[-1])
+            )
+            if dist >= min_segment_length:
+                final_points.append(key_points[i])
+        
+        self.get_logger().info(
+            f'Path simplification:'
+            f'\n- Original points: {len(path_grid)}'
+            f'\n- After Douglas-Peucker: {len(simplified_path)}'
+            f'\n- Final waypoints: {len(final_points)}'
+        )
+        
+        return final_points
 
     def compute_waypoints(self, important_path):
         """Computes (x, y, θ) for the extracted path corners."""
@@ -345,7 +488,7 @@ class AStarPathPlanner(Node):
 
         return waypoints
     
-    def find_closest_valid_point(self, target_grid, max_search_radius=20):
+    def find_closest_valid_point(self, target_grid, max_search_radius=200):
         """Find the closest valid and reachable point to target."""
         if target_grid in self.graph:
             return target_grid
@@ -396,70 +539,6 @@ class AStarPathPlanner(Node):
         )
         return None
 
-    def find_alternative_goal(self, start_grid, end_grid, max_path_points=5):
-        """Find alternative goal by assuming unexplored regions are free."""
-        try:
-            self.get_logger().info(
-                f'[Path Planner] Finding alternative goal:'
-                f'\n- Start: {start_grid}'
-                f'\n- Target: {end_grid}'
-            )
-
-            # Create temporary graph including unexplored space
-            temp_map = self.latest_map.copy()
-            temp_map[temp_map == -1] = 0  # Treat unexplored as free
-            temp_graph = self.create_graph(temp_map)
-
-            if not (start_grid in temp_graph and end_grid in temp_graph):
-                self.get_logger().warn('Start or end point not in temporary graph')
-                return None
-
-            # Find path in temporary graph
-            try:
-                full_path = nx.astar_path(
-                    temp_graph,
-                    start_grid,
-                    end_grid,
-                    weight='weight',
-                    heuristic=self.clearance_aware_heuristic
-                )
-            except nx.NetworkXNoPath:
-                self.get_logger().warn('No path found in temporary graph')
-                return None
-
-            # Walk along path until we hit unexplored or obstacle
-            valid_path = []
-            for point in full_path:
-                y, x = point[1], point[0]  # Convert to map coordinates
-                
-                # Check if point is in known free space
-                if self.latest_map[y, x] == 0:  # Known free space
-                    valid_path.append(point)
-                else:  # Hit obstacle or unexplored
-                    break
-
-                # Stop if we have enough points
-                if len(valid_path) >= max_path_points:
-                    break
-
-            if valid_path:
-                # Take the last valid point as alternative goal
-                alt_goal = valid_path[-10]
-                self.get_logger().info(
-                    f'[Path Planner] Found alternative goal:'
-                    f'\n- Original target: {end_grid}'
-                    f'\n- Alternative goal: {alt_goal}'
-                    f'\n- Path length: {len(valid_path)}'
-                )
-                return alt_goal
-            else:
-                self.get_logger().warn('No valid points found in path')
-                return None
-
-        except Exception as e:
-            self.get_logger().error(f'Error finding alternative goal: {str(e)}')
-            return None
-
     def plan_path(self):
         """Plans a path using A* directly in map frame with enhanced error handling"""
         try:
@@ -475,13 +554,15 @@ class AStarPathPlanner(Node):
                 return
                 
             # Log current state
+            grid_height, grid_width = self.latest_map.shape
             self.get_logger().info(
-                f'Planning path with:'
-                f'\n- Map processed: {self.map_processed}'
-                f'\n- Graph nodes: {len(self.graph.nodes)}'
-                f'\n- Current pose: {self.current_pose}'
-                f'\n- End pose: {self.end_pose}'
-            )
+            f'Planning path with:'
+            f'\n- Map processed: {self.map_processed}'
+            f'\n- Graph nodes: {len(self.graph.nodes)}'
+            f'\n- Grid size: {grid_width}x{grid_height}'
+            f'\n- Current pose: {self.current_pose}'
+            f'\n- End pose: {self.end_pose}'
+        )
 
             # Convert poses to grid coordinates
             start_grid = self.world_to_grid(*self.current_pose)
@@ -503,18 +584,27 @@ class AStarPathPlanner(Node):
                 self.get_logger().info(f'Using alternative start point: {start_grid}')
             
             # Validate end point
-            if end_grid not in self.graph:
-                self.get_logger().warn(f'End point {end_grid} not in graph, finding closest valid point')
-                end_grid = self.find_closest_valid_point(end_grid)
-                if not end_grid:
-                    self.get_logger().error('No valid goal position found!')
-                    return
-                self.get_logger().info(f'Using alternative end point: {end_grid}')
+            # if end_grid not in self.graph:
+            #     self.get_logger().warn(f'End point {end_grid} not in graph, finding closest valid point')
+            #     end_grid = self.find_closest_valid_point(end_grid)
+            #     if not end_grid:
+            #         self.get_logger().error('No valid goal position found!')
+            #         return
+            #     self.get_logger().info(f'Using alternative end point: {end_grid}')
             
             # Check path existence
-            if not nx.has_path(self.graph, start_grid, end_grid):
+            if end_grid not in self.graph:
                 self.get_logger().warn('Direct path not possible, trying alternative goal...')
-                alt_goal = self.find_alternative_goal(start_grid, end_grid)
+                alt_goal = self.find_reachable_goal(start_grid, end_grid)
+                if not alt_goal:
+                    self.get_logger().error('No alternative path possible!')
+                    return
+                end_grid = alt_goal
+                self.get_logger().info(f'Using alternative goal: {end_grid}')
+
+            elif not nx.has_path(self.graph, start_grid, end_grid):
+                self.get_logger().warn('Direct path not possible, trying alternative goal...')
+                alt_goal = self.find_reachable_goal(start_grid, end_grid)
                 if not alt_goal:
                     self.get_logger().error('No alternative path possible!')
                     return
@@ -537,7 +627,34 @@ class AStarPathPlanner(Node):
                 
             self.get_logger().info(f'Found path with {len(path_grid)} points')
             
-            # Rest of the path processing...
+            # Publish original path before turn extraction
+            original_path_msg = Path()
+            original_path_msg.header.frame_id = 'map'
+            original_path_msg.header.stamp = self.get_clock().now().to_msg()
+            
+            for grid_x, grid_y in path_grid:
+                world_x, world_y = self.grid_to_world(grid_x, grid_y)
+                pose = PoseStamped()
+                pose.pose.position.x = world_x
+                pose.pose.position.y = world_y
+                pose.pose.position.z = 0.0
+                
+                # Use orientation from next point if available
+                next_idx = path_grid.index((grid_x, grid_y)) + 1
+                if next_idx < len(path_grid):
+                    next_x, next_y = path_grid[next_idx]
+                    next_world_x, next_world_y = self.grid_to_world(next_x, next_y)
+                    theta = np.arctan2(next_world_y - world_y, next_world_x - world_x)
+                else:
+                    theta = 0.0  # Default orientation for last point
+                    
+                pose.pose.orientation = self.yaw_to_quaternion(theta)
+                original_path_msg.poses.append(pose)
+            
+            # Publish original path
+            self.original_path_pub.publish(original_path_msg)
+            
+            # Continue with turn extraction and final path publishing
             important_path = self.extract_turns(path_grid)
             waypoints = self.compute_waypoints(important_path)
             
@@ -602,36 +719,19 @@ class AStarPathPlanner(Node):
             return euclidean_dist
     
     def goal_callback(self, msg):
-        """Handle new goal pose from end_pose_publisher."""
+        """Handle new goal pose and wait for next map update."""
         try:
-            new_end_pose = (msg.x, msg.y)
-            self.get_logger().info(f'Received goal: ({msg.x:.2f}, {msg.y:.2f})')
+            new_goal = (msg.x, msg.y)
             
-            # Update end pose
-            self.end_pose = new_end_pose
+            # Store goal and set waiting flag
+            self.pending_goal = new_goal
+            self.waiting_for_map = True
+            self.pending_goal_timestamp = self.get_clock().now()
             
-            # Check if we can plan
-            if not self.map_processed:
-                self.get_logger().warn('Map not processed yet, storing goal for later')
-                return
-                
-            if not self.current_pose:
-                self.get_logger().warn('Current pose not available yet, storing goal for later')
-                return
-                
-            if not self.graph:
-                self.get_logger().warn('Graph not initialized yet, storing goal for later')
-                return
-                
-            # Convert goal to grid coordinates and validate
-            end_grid = self.world_to_grid(*new_end_pose)
-            if not (0 <= end_grid[0] < self.latest_map.shape[1] and 
-                    0 <= end_grid[1] < self.latest_map.shape[0]):
-                self.get_logger().error('Goal position outside map bounds!')
-                return
-                
-            self.get_logger().info('Starting path planning to new goal...')
-            self.plan_path()
+            self.get_logger().info(
+                f'New goal received: ({msg.x:.2f}, {msg.y:.2f})\n'
+                'Waiting for next map update before planning...'
+            )
 
         except Exception as e:
             self.get_logger().error(f'Error in goal_callback: {str(e)}')
@@ -661,6 +761,85 @@ class AStarPathPlanner(Node):
             if raw_map[y, x] == 100:
                 return False
         return True
+
+    def find_reachable_goal(self, start_grid, target_grid, search_radius=200):
+        """Find closest reachable point by searching outward from target."""
+        try:
+            # First check if target is directly reachable
+            if target_grid in self.graph:
+                self.get_logger().info('Target is directly reachable')
+                return target_grid
+
+            # Create temporary map treating unknown space as free
+            temp_map = self.latest_map.copy()
+            temp_map[temp_map == -1] = 0  # Convert unknown to free space
+            
+            # Create temporary graph with minimal obstacle inflation
+            temp_graph = self.create_graph(
+                raw_map=temp_map,
+                obstacle_radius=1
+            )
+
+            # Start from target and search outward
+            target_x, target_y = target_grid
+            height, width = self.latest_map.shape
+            
+            # Store valid candidates
+            candidates = []
+            
+            # Search in expanding circles
+            for radius in range(1, search_radius + 1):
+                # Check points at current radius
+                for angle in range(0, 360, 10):  # Check every 10 degrees
+                    # Convert polar to cartesian coordinates
+                    dx = int(radius * np.cos(np.radians(angle)))
+                    dy = int(radius * np.sin(np.radians(angle)))
+                    
+                    check_x = target_x + dx
+                    check_y = target_y + dy
+                    
+                    # Skip if out of bounds
+                    if not (0 <= check_x < width and 0 <= check_y < height):
+                        continue
+                    
+                    check_point = (check_x, check_y)
+                    
+                    # Check if point exists in both graphs
+                    if (check_point in self.graph and check_point in temp_graph and
+                        nx.has_path(self.graph, start_grid, check_point) and 
+                        nx.has_path(temp_graph, check_point, target_grid)):
+                        
+                        # Calculate distance from target
+                        dist = np.sqrt(dx**2 + dy**2)
+                        candidates.append((check_point, dist))
+                
+                # If we found any valid points in this radius, return the closest one
+                if candidates:
+                    # Sort by distance and get closest
+                    candidates.sort(key=lambda x: x[1])
+                    best_point = candidates[0][0]
+                    
+                    self.get_logger().info(
+                        f'Found reachable goal:\n'
+                        f'- Original target: {target_grid}\n'
+                        f'- Selected point: {best_point}\n'
+                        f'- Search radius: {radius}\n'
+                        f'- Total candidates: {len(candidates)}'
+                    )
+                    return best_point
+                
+                # Log progress every few radii
+                if radius % 5 == 0:
+                    self.get_logger().debug(f'Searched radius {radius} with no valid points')
+
+            self.get_logger().warn('No reachable point found within search radius')
+            return None
+
+        except Exception as e:
+            self.get_logger().error(f'Error finding reachable goal: {str(e)}')
+            return None
+
+
 
 def main(args=None):
     rclpy.init(args=args)

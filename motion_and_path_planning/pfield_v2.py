@@ -20,10 +20,13 @@ class PotentialFieldController(Node):
         self.setup_communications()
         self.initialize_state()
         
-        self.tf_buffer = tf2_ros.Buffer()
-        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+        # Remove tf buffer and listener since we'll use position topic
+        # self.tf_buffer = tf2_ros.Buffer()
+        # self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
         
-        self.create_timer(0.1, self.update_robot_pose)  # 10Hz updates
+        # Remove pose update timer
+        # self.create_timer(0.1, self.update_robot_pose)
+        
         self.create_timer(1.0, self.publish_debug_info)
         
         self.get_logger().info('Potential field controller initialized')
@@ -32,19 +35,19 @@ class PotentialFieldController(Node):
 
     def setup_parameters(self):
         # Separate linear and angular velocity limits
-        self.linear_vel_max = 0.8
-        self.angular_vel_max = 1.2  # Higher angular velocity limit
-        self.linear_vel_slow = 0.4
+        self.linear_vel_max = 0.12
+        self.angular_vel_max = 0.15 # Higher angular velocity limit
+        self.linear_vel_slow = 0.05
         self.linear_vel_min = 0.01
         
-        self.dist_threshold = 0.2 
-        self.angle_threshold = 0.1  
+        self.dist_threshold = 0.4 
+        self.angle_threshold = 0.5  
         self.slow_zone = 0.5
         
         self.gain_attract = 1.0      
         self.gain_repulse = 2.5      
         self.obstacle_radius = 1.0   
-        self.emergency_stop_radius = 0.2  # Emergency stop distance
+        self.emergency_stop_radius = 0.001 # Emergency stop distance
         self.emergency_hysteresis = 0.3  # Must be clear by this distance to resume
         self.obstacle_arc = np.pi/3  # Consider obstacles within ±60° arc in front
         self.emergency_backup_speed = -0.1  # Speed for backing up
@@ -71,6 +74,14 @@ class PotentialFieldController(Node):
         self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         self.debug_pub = self.create_publisher(String, 'pfield_debug', 10)
         
+        # Add robot position subscriber
+        self.create_subscription(
+            PoseStamped,
+            'robot_position',
+            self.on_robot_position,
+            10
+        )
+        
         self.create_subscription(Pose2D, 'end_pose', self.on_goal_received, 10)
         self.create_subscription(LaserScan, '/scan', self.on_scan_received, 10)
         
@@ -84,57 +95,29 @@ class PotentialFieldController(Node):
         self.cmd_current = Twist()
         self.status = "Waiting for goal pose"
 
-    def update_robot_pose(self):
-        """Get current pose from tf transform with robust timing handling"""
+    def on_robot_position(self, msg):
+        """Handle robot position updates from tf_republisher"""
         try:
-            # Get latest transform without timestamp
-            now = rclpy.time.Time()
-            transform = self.tf_buffer.lookup_transform_full(
-                target_frame='map',
-                target_time=now,
-                source_frame='base_link',
-                source_time=now,
-                fixed_frame='map',
-                timeout=rclpy.duration.Duration(seconds=0.1)
-            )
-            
-            # Update robot pose in map frame
+            # Update current pose
             self.pose_current['pos'] = np.array([
-                transform.transform.translation.x,
-                transform.transform.translation.y
+                msg.pose.position.x,
+                msg.pose.position.y
             ])
             
-            # Add smoothing for stability
-            if not hasattr(self, 'last_pose'):
-                self.last_pose = self.pose_current['pos'].copy()
-            
-            # Apply exponential smoothing
-            alpha = 0.3  # Smoothing factor
-            smoothed_pos = (1 - alpha) * self.last_pose + alpha * self.pose_current['pos']
-            
-            # Update poses with smoothed values
-            self.last_pose = smoothed_pos.copy()
-            self.pose_current['pos'] = smoothed_pos
-            
             # Extract yaw from quaternion
-            q = transform.transform.rotation
-            _, _, yaw = tf_transformations.euler_from_quaternion([q.x, q.y, q.z, q.w])
+            q = msg.pose.orientation
+            _, _, yaw = tf_transformations.euler_from_quaternion(
+                [q.x, q.y, q.z, q.w]
+            )
             self.pose_current['angle'] = yaw
             
             # Update control if we have a goal
             if not np.isnan(self.pose_goal['pos'][0]):
                 if not self.check_goal_reached():
                     self.update_control()
-                
-        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, 
-                tf2_ros.ExtrapolationException) as e:
-            if not hasattr(self, '_last_tf_error_time') or \
-               (self.get_clock().now() - self._last_tf_error_time).nanoseconds / 1e9 > 5.0:
-                self.get_logger().warn(
-                    f'Transform lookup failed: {str(e)}\n'
-                    f'Current pose: {self.pose_current["pos"] if hasattr(self, "pose_current") else "None"}'
-                )
-                self._last_tf_error_time = self.get_clock().now()
+                    
+        except Exception as e:
+            self.get_logger().error(f'Error processing robot position: {str(e)}')
 
     def on_goal_received(self, msg):
         """Handle new goal directly in map frame with duplicate detection"""

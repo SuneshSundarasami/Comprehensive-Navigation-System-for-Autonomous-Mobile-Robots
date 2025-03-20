@@ -6,6 +6,7 @@ from nav_msgs.msg import OccupancyGrid, Odometry
 from sensor_msgs.msg import LaserScan
 from tf2_ros import TransformBroadcaster
 import math
+import tf2_ros
 from visualization_msgs.msg import Marker
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy, QoSDurabilityPolicy
 from .motion_model import MotionModel
@@ -88,6 +89,14 @@ class ParticleFilter(Node):
             self.measurement_update
         )
         self.visualization_timer = self.create_timer(0.1, self.publish_visualization)
+
+        # Add tf buffer and listener
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+        
+        # Add laser transform parameters
+        self.laser_transform = None
+        self.get_laser_transform()
 
     def initialize_particles(self):
         """Initialize particles either locally or globally"""
@@ -218,7 +227,7 @@ class ParticleFilter(Node):
         )
 
     def measurement_update(self):
-        """Update particle weights using simple scan matching"""
+        """Update particle weights using transformed scan matching"""
         if self.particles is None or self.map_data is None or self.latest_scan is None:
             return
         
@@ -241,13 +250,16 @@ class ParticleFilter(Node):
         if not np.any(valid_idx):
             return
         
-        # Convert valid scans to points
+        # Convert valid scans to points in laser frame
         scan_points = np.column_stack((
             np.cos(angles[valid_idx]) * ranges[valid_idx],
             np.sin(angles[valid_idx]) * ranges[valid_idx]
         ))
         
-        # Update weights using simple measurement model
+        # Transform points to base_link frame
+        scan_points = self.transform_scan_points(scan_points)
+        
+        # Update weights using transformed points
         self.weights = np.array([
             self.measurement_model.compute_likelihood(
                 particle, scan_points, self.map_data, self.map_info
@@ -265,44 +277,93 @@ class ParticleFilter(Node):
                 self.resample()
 
     def resample(self):
-        """Systematic resampling with random particle injection"""
-        # Get best particle
-        best_idx = np.argmax(self.weights)
-        best_particle = self.particles[best_idx]
-        
-        # Keep 80% of particles through resampling
-        num_keep = int(self.num_particles * 0.8)
-        
-        # Systematic resampling for particles to keep
-        positions = (np.random.random() + np.arange(num_keep)) / num_keep
-        cumsum = np.cumsum(self.weights)
-        cumsum[-1] = 1.0
-        indices = np.searchsorted(cumsum, positions)
-        resampled_particles = self.particles[indices]
-        
-        # Generate 20% new random particles near best estimate
-        num_random = self.num_particles - num_keep
-        random_particles = np.zeros((num_random, 3))
-        
-        # Random particle generation parameters
-        pos_std = 0.3  # Standard deviation for position (meters)
-        angle_std = 0.2  # Standard deviation for angle (radians)
-        
-        # Generate random particles with Gaussian noise around best particle
-        random_particles[:, 0] = np.random.normal(best_particle[0], pos_std, num_random)
-        random_particles[:, 1] = np.random.normal(best_particle[1], pos_std, num_random)
-        random_particles[:, 2] = np.random.normal(best_particle[2], angle_std, num_random)
-        
-        # Combine resampled and random particles
-        self.particles = np.vstack((resampled_particles, random_particles))
-        self.weights = np.ones(self.num_particles) / self.num_particles
-        
-        self.get_logger().debug(
-            f'Resampled particles:'
-            f'\n - Kept: {num_keep}'
-            f'\n - Random: {num_random}'
-            f'\n - Best particle: ({best_particle[0]:.2f}, {best_particle[1]:.2f}, {best_particle[2]:.2f})'
-        )
+        """Systematic resampling with random particle injection and map boundary checking"""
+        try:
+            # Get map boundaries
+            map_bounds_x = [
+                self.map_info.origin.position.x,
+                self.map_info.origin.position.x + self.map_info.width * self.map_info.resolution
+            ]
+            map_bounds_y = [
+                self.map_info.origin.position.y,
+                self.map_info.origin.position.y + self.map_info.height * self.map_info.resolution
+            ]
+
+            # Get best particle
+            best_idx = np.argmax(self.weights)
+            best_particle = self.particles[best_idx]
+            
+            # Keep 80% of particles through resampling
+            num_keep = int(self.num_particles * 0.8)
+            
+            # Systematic resampling for particles to keep
+            positions = (np.random.random() + np.arange(num_keep)) / num_keep
+            cumsum = np.cumsum(self.weights)
+            cumsum[-1] = 1.0
+            indices = np.searchsorted(cumsum, positions)
+            resampled_particles = self.particles[indices]
+            
+            # Filter resampled particles to keep only those within map bounds
+            valid_resampled = (
+                (resampled_particles[:, 0] >= map_bounds_x[0]) & 
+                (resampled_particles[:, 0] <= map_bounds_x[1]) & 
+                (resampled_particles[:, 1] >= map_bounds_y[0]) & 
+                (resampled_particles[:, 1] <= map_bounds_y[1])
+            )
+            resampled_particles = resampled_particles[valid_resampled]
+            
+            # Adjust number of random particles to maintain total particle count
+            num_random = self.num_particles - len(resampled_particles)
+            random_particles = np.zeros((num_random, 3))
+            
+            # Random particle generation parameters
+            pos_std = 0.3  # Standard deviation for position (meters)
+            angle_std = 0.2  # Standard deviation for angle (radians)
+            
+            # Generate and validate random particles
+            valid_random_count = 0
+            max_attempts = num_random * 3  # Limit attempts to prevent infinite loop
+            attempts = 0
+            
+            while valid_random_count < num_random and attempts < max_attempts:
+                # Generate candidate particle
+                candidate = np.array([
+                    np.random.normal(best_particle[0], pos_std),
+                    np.random.normal(best_particle[1], pos_std),
+                    np.random.normal(best_particle[2], angle_std)
+                ])
+                
+                # Check if within bounds
+                if (map_bounds_x[0] <= candidate[0] <= map_bounds_x[1] and
+                    map_bounds_y[0] <= candidate[1] <= map_bounds_y[1]):
+                    random_particles[valid_random_count] = candidate
+                    valid_random_count += 1
+                
+                attempts += 1
+            
+            # Trim random particles if we couldn't generate enough valid ones
+            if valid_random_count < num_random:
+                random_particles = random_particles[:valid_random_count]
+                self.get_logger().warn(
+                    f'Could only generate {valid_random_count}/{num_random} valid random particles'
+                )
+            
+            # Combine valid particles
+            self.particles = np.vstack((resampled_particles, random_particles))
+            self.num_particles = len(self.particles)
+            self.weights = np.ones(self.num_particles) / self.num_particles
+            
+            self.get_logger().debug(
+                f'Resampled particles:\n'
+                f' - Original particles: {len(indices)}\n'
+                f' - Valid resampled: {len(resampled_particles)}\n'
+                f' - Valid random: {len(random_particles)}\n'
+                f' - Total: {self.num_particles}\n'
+                f' - Best particle: ({best_particle[0]:.2f}, {best_particle[1]:.2f}, {best_particle[2]:.2f})'
+            )
+
+        except Exception as e:
+            self.get_logger().error(f'Error in resampling: {str(e)}')
 
     def publish_visualization(self):
         """Publish particles and best estimate"""
@@ -420,6 +481,56 @@ class ParticleFilter(Node):
     def odom_callback(self, msg):
         """Store odometry data"""
         self.current_odom = msg
+
+    def get_laser_transform(self):
+        """Get static transform from laser to base_link"""
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                'base_link',
+                'laser_front_link',
+                rclpy.time.Time(),
+                timeout=rclpy.duration.Duration(seconds=1.0)
+            )
+            
+            # Extract translation and rotation
+            self.laser_transform = {
+                'x': transform.transform.translation.x,
+                'y': transform.transform.translation.y,
+                'yaw': 2.0 * np.arctan2(
+                    transform.transform.rotation.z,
+                    transform.transform.rotation.w
+                )
+            }
+            
+            self.get_logger().info(
+                f'Laser transform obtained: ({self.laser_transform["x"]:.3f}, '
+                f'{self.laser_transform["y"]:.3f}, {self.laser_transform["yaw"]:.3f})'
+            )
+            
+        except Exception as e:
+            self.get_logger().error(f'Failed to get laser transform: {str(e)}')
+            self.laser_transform = None
+
+    def transform_scan_points(self, scan_points):
+        """Transform scan points from laser frame to base_link"""
+        if self.laser_transform is None:
+            self.get_laser_transform()
+            if self.laser_transform is None:
+                return scan_points
+                
+        # Create rotation matrix
+        c = np.cos(self.laser_transform['yaw'])
+        s = np.sin(self.laser_transform['yaw'])
+        R = np.array([[c, -s], [s, c]])
+        
+        # Rotate points
+        transformed_points = np.dot(scan_points, R.T)
+        
+        # Add translation
+        transformed_points[:, 0] += self.laser_transform['x']
+        transformed_points[:, 1] += self.laser_transform['y']
+        
+        return transformed_points
 
 def main(args=None):
     rclpy.init(args=args)

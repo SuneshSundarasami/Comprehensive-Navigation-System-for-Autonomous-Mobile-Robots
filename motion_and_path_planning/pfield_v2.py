@@ -40,8 +40,8 @@ class PotentialFieldController(Node):
         self.linear_vel_slow = 0.05
         self.linear_vel_min = 0.01
         
-        self.dist_threshold = 0.4 
-        self.angle_threshold = 0.5  
+        self.dist_threshold = 0.25 
+        self.angle_threshold = 0.2  
         self.slow_zone = 0.5
         
         self.gain_attract = 1.0      

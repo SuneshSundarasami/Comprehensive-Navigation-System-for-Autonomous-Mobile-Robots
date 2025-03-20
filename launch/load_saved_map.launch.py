@@ -12,8 +12,8 @@ def generate_launch_description():
             package='tf2_ros',
             executable='static_transform_publisher',
             name='map_to_odom_tf',
-            # arguments=['0.137569506191043', '0.084991597573247',  '0', '0', '0.022683054398351', '0.999742706421588', 'odom', 'map']
-            arguments=['0', '0',  '0', '0', '0', '0.999742706421588', 'map', 'odom']
+            arguments=['-0.020297494813135322', '0.08146137802478476',  '0', '0', '0.0331489260393174', 'w: 0.9994504233339639', 'map', 'odom']
+            # arguments=['0', '0',  '0', '0', '0', '0.0', 'map', 'odom']
         ),
         # Map Server Node
         Node(

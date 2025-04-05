@@ -1,42 +1,180 @@
-[![Review Assignment Due Date](https://classroom.github.com/assets/deadline-readme-button-22041afd0340ce965d47ae6ef1cefeee28c7c493a6346c4f15d667ab976d596c.svg)](https://classroom.github.com/a/GnveAVr1)
-# AMR Project
+# Autonomous Mobile Robot (AMR) Project
 
-## Project Objectives
+Welcome to the AMR Project repository. This project is part of the Master of Autonomous Systems program at Hochschule Bonn-Rhein-Sieg.
 
-The objective of this project is that you deploy some of the functionalities that were discussed during the course on a real robot platform. In particular, we want to have functionalities for path and motion planning, localisation, and environment exploration on the robot.
+## Project Overview
 
-We will particularly use the Robile platform during the project; you are already familiar with this robot from the simulation you have been using throughout the semester as well as from the few practical lab sessions that we have had.
+This project presents an integrated navigation framework for autonomous mobile robots, addressing the critical challenges of path planning, localization, and environment exploration on the Robile platform. We implement comprehensive solutions for efficient navigation in unknown environments while handling real-world constraints and sensor uncertainties.
 
-## Task Description
 
-The project consists of three parts that are building on each other: (i) path and motion planning, (ii) localisation, and (iii) environment exploration.
+## Key Features
 
-### 1. Path and Motion Planning
+### Path Planning
+- Hybrid approach combining A* algorithm with a novel clearance-based heuristic
+- Two-phase path simplification algorithm preserving critical turns
+- Potential field control with emergency obstacle avoidance mechanisms (0.4m safety radius)
+- Weighted zones that penalize proximity to obstacles
 
-You have already implemented a *potential field planner* in one of your assignments. In this first part of the project, you need to port your implementation to the real robot and ensure that it is working as well as it was in the simulated environment so that you can navigate towards global goals while avoiding obstacles. Then, integrate your potential field planner with a global path planner, namely first use a path planner (e.g. A*) to find a rough global trajectory of waypoints that the robot can follow to reach a goal and then use the potential field planner to navigate between the waypoints. This will make your potential field planner applicable to large environments, where it can navigate given an environment map.
+### Localization
+- Particle filter localization using Monte Carlo methods
+- Dual motion models (linear and circular) for different movement patterns
+- Optimized sensor likelihood calculations using adaptive ray subsampling
+- Ball tree spatial indexing for efficient distance queries
+- Log-likelihood calculation for numerical stability
 
-### 2. Localisation
+### Autonomous Exploration
+- Frontier detection system using DBSCAN clustering
+- Multi-criteria decision making that balances:
+  - Information gain
+  - Distance costs
+  - Safety clearance threshold
+- Real-time progress monitoring and visualization
+- Adaptive blacklisting mechanism for problematic areas
 
-In one of the course lectures, we discussed Monte Carlo localisation as a practical solution to the robot localisation problem in an existing map. In this second part of the project, your objective is to implement your very own particle filter that you then integrate on the Robile. You should implement the simple version of the filter that we discussed in the lecture; however, if you have time and interest, you are free to additionally explore extensions / improvements to the algorithm, for example in the form of the adaptive Monte Carlo approach that we mentioned in the lecture.
+## Technologies Used
 
-### 3. Environment Exploration
+- **Platform**: Robile robot
+- **Framework**: ROS2 (Robot Operating System)
+- **Libraries**: 
+  - NetworkX (for graph-based path planning)
+  - NumPy (for efficient numerical operations)
+  - scikit-learn (for DBSCAN clustering)
+  - Ball Tree (for spatial indexing)
 
-The final objective of the project is to incorporate an environment exploration functionality to the robot. This will have to be combined with a SLAM component, namely you will need your exploration component to select poses to explore and a SLAM component that will take care of actually creating a map. The exploration algorithm should ideally select poses at the map fringe (i.e. poses that are at the boundary between the explored and unexplored region), but you are free to explore different pose selection strategies in your implementation.
+## Repository Structure
 
-# Practical Notes and Assumptions
-* For the first two tasks in this project, we need an environment map to be given. For this purpose, you should use an already existing SLAM approach in ROS (such as the `slam_toolbox` that you also used to map simulated environments) to create a map of the environment where you conduct your tests.
-* In the first task of the project, you will use a grid map to find a global task plan; however, this plan will be too granular to be integrated with the potential field planner, as every grid cell on the path will be considered an intermediate goal. To improve this, you need to post-process your path so that you extract a number of representative waypoints along the path; these will then be the intermediate goals of your potential field planner. How exactly you decide to post-process the path is up to you; for instance, you can take every n-th cell along the path as a waypoint (where n is predefined), or you can develop a smarter strategy and extract waypoints at important points along the path (e.g. sharp points).
-* You should also use an existing SLAM approach for the last part of the project, such that this will need to run in parallel with the exploration component. The selection of poses should thus be done with respect to the most up-to-date map provided by the SLAM algorithm.
+```
+amr-project-amr-t04/
+│
+├── src/
+│   ├── path_planning/
+│   │   ├── astar_planner.py        # A* algorithm with custom heuristic
+│   │   ├── clearance_map.py        # Generates safety maps using distance transforms
+│   │   ├── potential_field.py      # Motion control with obstacle avoidance
+│   │   └── path_simplifier.py      # Two-phase path simplification algorithm
+│   │
+│   ├── localization/
+│   │   ├── particle_filter.py      # Monte Carlo localization implementation
+│   │   ├── motion_models.py        # Linear and circular motion models
+│   │   ├── sensor_models.py        # Likelihood field and ray casting models
+│   │   └── resampling.py           # Diversity-preserving resampling
+│   │
+│   ├── exploration/
+│   │   ├── frontier_detection.py   # Identifies boundaries between known/unknown space
+│   │   ├── cluster_analysis.py     # DBSCAN clustering for frontier analysis
+│   │   ├── goal_selection.py       # Multi-criteria decision making
+│   │   └── progress_monitor.py     # Tracks exploration completion
+│   │
+│   └── visualization/
+│       ├── path_visualizer.py      # Renders planned paths in RViz
+│       └── exploration_markers.py  # Visualizes frontier clusters
+│
+├── launch/
+│   ├── navigation.launch.py        # Launch file for path planning and control
+│   ├── localization.launch.py      # Launch file for particle filter
+│   └── exploration.launch.py       # Launch file for autonomous exploration
+│
+├── config/
+│   ├── path_planning_params.yaml   # Configuration for A* and potential field
+│   ├── particle_filter_params.yaml # Configuration for localization
+│   └── exploration_params.yaml     # Configuration for frontier exploration
+│
+├── docs/
+│   └── AMR_Autonomous_navigation_exploration_localisation.pdf # Project report
+│
+└── README.md                       # Project readme file
+```
 
-## Submission Guidelines
+## Getting Started
 
-Your submission should be a short PDF report (maximum five pages using the following template: https://github.com/a2s-institute/rnd-project-report), where you briefly describe your approach for the different tasks. In the report, make sure to include:
-* A URL of a repository with all the code that you have developed during the project. Make sure that the repository contains a README file to explain the contents of the repository and provide short usage guidelines.
-* A short section that describes how each team member contributed to the project.
-* URLs to videos demonstrating your developed functionalities on the real Robile platform (you can upload these videos anywhere, for example to Google Drive or YouTube). In the videos, make sure that you explicitly show that you are executing your components!
+To get started with the project, follow these steps:
 
-The report should be uploaded to LEA before the submission deadline. The grading of the project will be done on the basis of this submission.
+1. **Clone the repository:**
+   ```sh
+   git clone https://github.com/HBRS-AMR/amr-project-amr-t04.git
+   cd amr-project-amr-t04
+   ```
 
-## Demonstration
+2. **Install ROS2 and dependencies:**
+   Ensure you have ROS2 installed. Then, install the dependencies:
+   ```sh
+   rosdep install --from-paths src --ignore-src -r -y
+   ```
 
-After the submission deadline, each group will also need to present their results in a live demonstration. We will agree on a date for the demonstration at a later date. The live demonstration does not count towards the project grade; it is just there so that you get some live demo experience and so that we can discuss any concrete issues that you have faced in your implementations.
+3. **Build the workspace:**
+   ```sh
+   colcon build
+   source install/setup.bash
+   ```
+
+4. **Launch the navigation system:**
+   ```sh
+   ros2 launch amr_project_amr_t04 motionandpathplanner.launch.py  
+   ```
+
+5. **Launch the localization system:**
+   ```sh
+   ros2 launch amr_project_amr_t04 localizer.launch.py  
+   ```
+
+6. **Launch the exploration system:**
+   ```sh
+   ros2 run amr_project_amr_t04 frontier_explorer
+   ```
+
+## Technical Implementation Details
+
+### Path Planning
+The A* algorithm uses a custom heuristic function:
+```
+h(n) = d_euclidean · (1 + 100 · e^(-c/2)) + P_obstacle
+```
+where:
+- c is the clearance value at position a
+- P_obstacle is a progressive penalty based on clearance zones
+
+### Localization
+The particle filter implements motion models for both linear and circular movement patterns:
+
+**Linear Motion Model:**
+```
+x_t = x_(t-1) + v_x·cos(θ_(t-1))·Δt - v_y·sin(θ_(t-1))·Δt + ϵ_x
+y_t = y_(t-1) + v_x·sin(θ_(t-1))·Δt + v_y·cos(θ_(t-1))·Δt + ϵ_y
+θ_t = θ_(t-1) + ω·Δt + ϵ_θ
+```
+
+**Circular Motion Model:**
+Used when angular velocity is significant, for more accurate curved trajectory prediction.
+
+### Exploration
+The multi-criteria goal selection formula:
+```
+S_total = w_u · U + w_o · C - w_d · (D/D_max)
+```
+where:
+- U is the count of unexplored cells within a given radius
+- C is the clearance value [0, 1]
+- D is the distance to the robot
+- D_max is the maximum allowed distance
+- w_u, w_o, and w_d are weight parameters
+
+## Video Demonstrations
+
+- [Localization Demo](https://youtu.be/Qq2m1GcVXMM)
+- [Exploration and Navigation Demo](https://youtu.be/jIJaT5MY-9g)
+
+## Future Work
+
+- Improve clearance map generation efficiency
+- Enhance localization for faster moving robots
+- Integrate additional sensory modalities such as depth cameras
+- Develop learning-based approaches for parameter adaptation
+
+## References
+
+1. H. Qin, S. Shao, T. Wang, X. Yu, Y. Jiang, and Z. Cao, "Review of autonomous path planning algorithms for mobile robots," Drones, vol. 7, no. 3, 2023.
+2. D. Fox et al., "Monte carlo localization: Efficient position estimation for mobile robots," Proceedings of the National Conference on Artificial Intelligence, pp. 343–349, 1999.
+
+## Acknowledgments
+
+We acknowledge the support of teaching assistant Anudeep Sai Akula in setting up the Robile platform and guiding us in case of any issues.

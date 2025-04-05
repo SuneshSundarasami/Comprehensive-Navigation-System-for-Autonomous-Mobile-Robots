@@ -10,7 +10,6 @@ Panels:
         - /LaserScan1
         - /Map1
         - /Path1
-        - /MarkerArray1
       Splitter Ratio: 0.5
     Tree Height: 723
   - Class: rviz_common/Selection
@@ -234,39 +233,40 @@ Visualization Manager:
       Show Names: false
       Tree:
         map:
-          odom:
-            base_footprint:
-              base_link:
-                base_laser_front_link:
-                  {}
-                robile_1_link:
-                  robile_1_drive_pivot_link:
-                    robile_1_drive_left_hub_wheel_link:
-                      {}
-                    robile_1_drive_right_hub_wheel_link:
-                      {}
-                robile_2_link:
-                  robile_2_drive_pivot_link:
-                    robile_2_drive_left_hub_wheel_link:
-                      {}
-                    robile_2_drive_right_hub_wheel_link:
-                      {}
-                robile_3_link:
-                  {}
-                robile_4_link:
-                  {}
-                robile_5_link:
-                  robile_5_drive_pivot_link:
-                    robile_5_drive_left_hub_wheel_link:
-                      {}
-                    robile_5_drive_right_hub_wheel_link:
-                      {}
-                robile_6_link:
-                  robile_6_drive_pivot_link:
-                    robile_6_drive_left_hub_wheel_link:
-                      {}
-                    robile_6_drive_right_hub_wheel_link:
-                      {}
+          {}
+        odom:
+          base_footprint:
+            base_link:
+              base_laser_front_link:
+                {}
+              robile_1_link:
+                robile_1_drive_pivot_link:
+                  robile_1_drive_left_hub_wheel_link:
+                    {}
+                  robile_1_drive_right_hub_wheel_link:
+                    {}
+              robile_2_link:
+                robile_2_drive_pivot_link:
+                  robile_2_drive_left_hub_wheel_link:
+                    {}
+                  robile_2_drive_right_hub_wheel_link:
+                    {}
+              robile_3_link:
+                {}
+              robile_4_link:
+                {}
+              robile_5_link:
+                robile_5_drive_pivot_link:
+                  robile_5_drive_left_hub_wheel_link:
+                    {}
+                  robile_5_drive_right_hub_wheel_link:
+                    {}
+              robile_6_link:
+                robile_6_drive_pivot_link:
+                  robile_6_drive_left_hub_wheel_link:
+                    {}
+                  robile_6_drive_right_hub_wheel_link:
+                    {}
       Update Interval: 0
       Value: true
     - Alpha: 1
@@ -352,30 +352,6 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /planned_path
       Value: true
-    - Class: rviz_default_plugins/MarkerArray
-      Enabled: true
-      Name: MarkerArray
-      Namespaces:
-        {}
-      Topic:
-        Depth: 5
-        Durability Policy: Volatile
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /frontier_markers
-      Value: true
-    - Class: rviz_default_plugins/MarkerArray
-      Enabled: true
-      Name: MarkerArray
-      Namespaces:
-        {}
-      Topic:
-        Depth: 5
-        Durability Policy: Volatile
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /visualization_marker_array
-      Value: true
     - Alpha: 1
       Arrow Length: 0.30000001192092896
       Axes Length: 0.30000001192092896
@@ -396,19 +372,6 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /particles
-      Value: true
-    - Class: rviz_default_plugins/Marker
-      Enabled: true
-      Name: Marker
-      Namespaces:
-        {}
-      Topic:
-        Depth: 5
-        Durability Policy: Volatile
-        Filter size: 10
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /particle_estimate
       Value: true
   Enabled: true
   Global Options:

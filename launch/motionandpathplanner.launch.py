@@ -5,7 +5,7 @@ def generate_launch_description():
     return LaunchDescription([
         Node(
             package='amr_project_amr_t04',
-            executable='pfieldmodel',
+            executable='pfieldmodel2',
             name='potential_field_node',
             output='screen'
         ),

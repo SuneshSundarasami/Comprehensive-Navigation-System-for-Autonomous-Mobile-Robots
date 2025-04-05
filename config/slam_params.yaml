@@ -1,0 +1,48 @@
+slam_toolbox:
+  ros__parameters:
+    # Laser settings
+    max_laser_range: 15.0
+    min_range: 0.15
+
+    # Free space mapping
+    update_factor_free: 0.8  # Increased for more aggressive free space marking
+    update_factor_occupied: 0.9
+    map_update_interval: 1.0
+    
+    # Scan Processing
+    resolution: 0.05
+    use_scan_matching: true
+    use_scan_barycenter: true
+    scan_buffer_size: 10
+    scan_skip: 0  # Process all scans
+    
+    # Ray tracing parameters
+    minimum_angle_penalty: 0.9
+    minimum_distance_penalty: 0.5
+    link_match_minimum_response_fine: 0.1
+    link_scan_maximum_distance: 1.5
+    loop_search_maximum_distance: 3.0
+    ray_trace_step_size: 0.5  # Smaller value = more dense ray tracing
+    minimum_travel_distance: 0.2  # Distance between scans to be processed
+    angle_penalty_multiplier: 1.0
+    scan_buffer_maximum_scan_distance: 20.0
+    cell_partitioning: 4  # Helps with better ray tracing
+    ray_skip_distance: 0.5  # Controls density of ray casting
+    
+    # Real-time performance
+    threads: 4
+    transform_timeout: 0.2
+    transform_publish_period: 0.02
+    minimum_time_interval: 0.2
+    enable_interactive_mode: false
+    interpolate_scans: true  # Enable scan interpolation
+    publish_period: 1.0  # More frequent map updates
+    
+    # Map quality
+    max_covariance_size: 0.01
+    minimum_travel_heading: 0.2
+    minimum_travel_distance: 0.2
+
+    # Critical parameters for fixing V-shaped holes
+    maximum_loop_closure_distance: 3.0
+    distribute_scan: true  # Important for filling gaps

@@ -13,6 +13,7 @@ from cv_bridge import CvBridge
 import tf_transformations
 from geometry_msgs.msg import Quaternion
 from sensor_msgs.msg import Image
+from geometry_msgs.msg import Pose2D
 
 class AStarPathPlanner(Node):
     def __init__(self):
@@ -23,14 +24,24 @@ class AStarPathPlanner(Node):
         self.path_pub = self.create_publisher(Path, '/planned_path', 10)
         self.clearance_pub = self.create_publisher(OccupancyGrid, '/clearance_map', 10)
 
+        # Add goal pose subscription
+        self.goal_sub = self.create_subscription(
+            Pose2D,
+            'goal_pose',  # Match the topic name from end_pose_publisher
+            self.goal_callback,
+            10
+        )
 
+        # Initialize state variables with hardcoded end pose
         self.map_data = None
         self.map_info = None
         self.current_pose = None
-        self.end_pose = (0, 0)  # Goal in world coordinates
+        self.end_pose = (10000, 10000)  # Hardcoded initial end pose
+        self.initial_path_planned = False  # Flag to track initial path
+        self.last_end_pose = None
         self.graph = None
         self.clearance_map = None
-        self.map_processed = False  # Flag to ensure map is only processed once
+        self.map_processed = False
 
         self.get_logger().info('A* Path Planner Node initialized')
 
@@ -44,12 +55,12 @@ class AStarPathPlanner(Node):
 
         self.clearance_map = self.compute_clearance_map(raw_map)
         self.graph = self.create_graph(raw_map)
-        self.map_processed = True  # Mark as processed
-
-        self.get_logger().info(f'Received map: {msg.info.width}x{msg.info.height}, Resolution: {msg.info.resolution}')
-        self.plan_path()  # Try planning a path if pose is available
-
-
+        self.map_processed = True
+    
+        # Try planning initial path with hardcoded end pose
+        if not self.initial_path_planned and self.current_pose:
+            self.plan_path()
+            self.initial_path_planned = True
 
     def compute_clearance_map(self, raw_map):
         try:
@@ -109,7 +120,7 @@ class AStarPathPlanner(Node):
 
 
 
-    def create_graph(self, raw_map, obstacle_radius=1):
+    def create_graph(self, raw_map, obstacle_radius=2):
         """Creates a weighted graph representation of the grid map for A* with wider obstacles."""
         height, width = raw_map.shape
         G = nx.grid_2d_graph(width, height)
@@ -147,10 +158,18 @@ class AStarPathPlanner(Node):
         return G
 
     def odom_callback(self, msg):
-        """Receives odometry updates and triggers path planning."""
-        self.current_pose = (msg.pose.pose.position.x, msg.pose.pose.position.y)
-        if self.map_processed:  # Only plan if the map has been processed
+        """Receives odometry updates."""
+        new_pose = (msg.pose.pose.position.x, msg.pose.pose.position.y)
+        
+        # Update current pose
+        self.current_pose = new_pose
+        
+        # Only plan initial path when map is processed and we have current pose
+        if (not self.initial_path_planned and self.map_processed and 
+            self.current_pose and self.end_pose):
             self.plan_path()
+            self.initial_path_planned = True
+            self.last_end_pose = self.end_pose
 
     def world_to_grid(self, x, y):
         """Converts world coordinates to grid coordinates."""
@@ -224,48 +243,183 @@ class AStarPathPlanner(Node):
 
         return waypoints
     
+    def find_closest_valid_point(self, target_grid, start_grid=None, max_search_radius=100):
+        """Find the closest valid and reachable point to the target in the graph."""
+        if target_grid in self.graph and (start_grid is None or 
+            nx.has_path(self.graph, start_grid, target_grid)):
+            return target_grid
+
+        target_x, target_y = target_grid
+        min_distance = float('inf')
+        closest_point = None
+        candidates = []
+
+        # Search in expanding squares around the target
+        for r in range(1, max_search_radius):
+            # Check all points in the perimeter (including diagonals)
+            for i in range(-r, r + 1):
+                for dx, dy in [(1, 0), (0, 1), (-1, 0), (0, -1),  # Cardinals
+                            (1, 1), (1, -1), (-1, 1), (-1, -1)]:  # Diagonals
+                    check_x = target_x + (i * dx)
+                    check_y = target_y + (i * dy)
+                    point = (check_x, check_y)
+                    
+                    if point in self.graph:
+                        dist = np.sqrt((check_x - target_x)**2 + (check_y - target_y)**2)
+                        # Store candidates sorted by distance
+                        candidates.append((dist, point))
+
+            # Sort candidates by distance and check reachability
+            if candidates:
+                candidates.sort(key=lambda x: x[0])  # Sort by distance
+                for dist, point in candidates:
+                    # Check if point is reachable from start
+                    if start_grid is None or nx.has_path(self.graph, start_grid, point):
+                        self.get_logger().debug(
+                            f'Found reachable point at distance {dist:.2f} from target'
+                        )
+                        return point
+
+        return None
+
     def plan_path(self):
         """Plans a path using A* with precomputed clearance."""
         if self.current_pose is None or not self.map_processed:
             return
 
+        # Convert poses to grid coordinates
         start_grid = self.world_to_grid(*self.current_pose)
         end_grid = self.world_to_grid(*self.end_pose)
-
-        # self.get_logger().info(f'Planning path from {start_grid} to {end_grid}')
-
-        if start_grid not in self.graph :
-            self.get_logger().warn('Start is in an invalid position!')
+        
+        self.get_logger().info(f'Planning path from {start_grid} to {end_grid}')
+        
+        # Debug graph information
+        self.get_logger().info(f'Graph has {len(self.graph.nodes)} nodes and {len(self.graph.edges)} edges')
+        
+        # Find valid start point
+        if start_grid not in self.graph:
+            start_grid = self.find_closest_valid_point(start_grid)
+            if start_grid is None:
+                self.get_logger().warn('No valid start position found! Publishing direct path to goal.')
+                if self.end_pose == (10000, 10000) :
+                    return
+                # Create and publish single-pose path to goal
+                path_msg = Path()
+                path_msg.header.frame_id = 'odom'
+                path_msg.header.stamp = self.get_clock().now().to_msg()
+                
+                pose = PoseStamped()
+                pose.pose.position.x = self.end_pose[0]
+                pose.pose.position.y = self.end_pose[1]
+                pose.pose.position.z = 0.0
+                
+                # Calculate orientation towards goal
+                dx = self.end_pose[0] - self.current_pose[0]
+                dy = self.end_pose[1] - self.current_pose[1]
+                theta = np.arctan2(dy, dx)
+                pose.pose.orientation = self.yaw_to_quaternion(theta)
+                
+                path_msg.poses.append(pose)
+                self.path_pub.publish(path_msg)
+                self.get_logger().info('Published direct path to goal')
+                return
+            self.get_logger().info(f'Adjusted start position to: {start_grid}')
+        
+        # Find valid end point
+        if end_grid not in self.graph:
+            end_grid = self.find_closest_valid_point(end_grid)
+            if end_grid is None:
+                self.get_logger().warn('No valid goal position found! Publishing direct path to goal.')
+                if self.end_pose == (10000, 10000) :
+                    return
+                # Create and publish single-pose path to goal
+                path_msg = Path()
+                path_msg.header.frame_id = 'odom'
+                path_msg.header.stamp = self.get_clock().now().to_msg()
+                
+                pose = PoseStamped()
+                pose.pose.position.x = self.end_pose[0]
+                pose.pose.position.y = self.end_pose[1]
+                pose.pose.position.z = 0.0
+                
+                # Calculate orientation towards goal
+                dx = self.end_pose[0] - self.current_pose[0]
+                dy = self.end_pose[1] - self.current_pose[1]
+                theta = np.arctan2(dy, dx)
+                pose.pose.orientation = self.yaw_to_quaternion(theta)
+                
+                path_msg.poses.append(pose)
+                self.path_pub.publish(path_msg)
+                self.get_logger().info('Published direct path to goal')
+                return
+                
+            self.get_logger().info(f'Adjusted goal position to: {end_grid}')
+            # Update end_pose with the new valid position
+            self.end_pose = self.grid_to_world(*end_grid)
+        
+        # Verify connectivity
+        if not nx.has_path(self.graph, start_grid, end_grid):
+            self.get_logger().error(f'No path exists between {start_grid} and {end_grid}')
+            path_msg = Path()
+            path_msg.header.frame_id = 'odom'
+            path_msg.header.stamp = self.get_clock().now().to_msg()
+            
+            pose = PoseStamped()
+            pose.pose.position.x = self.end_pose[0]
+            pose.pose.position.y = self.end_pose[1]
+            pose.pose.position.z = 0.0
+            
+            # Calculate orientation towards goal
+            dx = self.end_pose[0] - self.current_pose[0]
+            dy = self.end_pose[1] - self.current_pose[1]
+            theta = np.arctan2(dy, dx)
+            pose.pose.orientation = self.yaw_to_quaternion(theta)
+            
+            path_msg.poses.append(pose)
+            self.path_pub.publish(path_msg)
+            self.get_logger().info('Published direct path to goal')
             return
 
-        if  end_grid not in self.graph:
-            self.get_logger().warn('Goal is in an invalid position!')
             return
 
         try:
-            path_grid = nx.astar_path(self.graph, start_grid, end_grid, weight='weight', heuristic=self.clearance_aware_heuristic)
+            # Calculate path with increased weight on path length
+            path_grid = nx.astar_path(
+                self.graph, 
+                start_grid, 
+                end_grid,
+                weight='weight',
+                heuristic=lambda a, b: 1.5 * np.sqrt((b[0] - a[0])**2 + (b[1] - a[1])**2)
+            )
+            
+            self.get_logger().info(f'Found path with {len(path_grid)} points')
+            
+            # Extract key points and compute waypoints
+            important_path = self.extract_turns(path_grid)
+            waypoints = self.compute_waypoints(important_path)
+            
+            # Create and publish path message
+            path_msg = Path()
+            path_msg.header.frame_id = 'odom'
+            path_msg.header.stamp = self.get_clock().now().to_msg()
+
+            for world_x, world_y, theta in waypoints:
+                pose = PoseStamped()
+                pose.pose.position.x = world_x
+                pose.pose.position.y = world_y
+                pose.pose.position.z = 0.0
+                pose.pose.orientation = self.yaw_to_quaternion(theta)
+                path_msg.poses.append(pose)
+
+            self.path_pub.publish(path_msg)
+            self.get_logger().info(f'Published path with {len(path_msg.poses)} waypoints')
+
         except nx.NetworkXNoPath:
-            self.get_logger().warn('No path found!')
+            self.get_logger().error('A* failed to find a path!')
             return
-
-        important_path = self.extract_turns(path_grid)
-        # self.get_logger().info(f'Initial paths: {len(path_grid)} | Extracted paths: {len(important_path)}')
-
-        waypoints = self.compute_waypoints(important_path)
-        path_msg = Path()
-        path_msg.header.frame_id = 'odom'
-        path_msg.header.stamp = self.get_clock().now().to_msg()
-
-        for world_x, world_y, theta in waypoints:
-            pose = PoseStamped()
-            pose.pose.position.x = world_x
-            pose.pose.position.y = world_y
-            pose.pose.position.z = 0.0
-            pose.pose.orientation = self.yaw_to_quaternion(theta)
-            path_msg.poses.append(pose)
-
-        self.path_pub.publish(path_msg)
-        # self.get_logger().info(f'Published path with {len(path_msg.poses)} poses')
+        except Exception as e:
+            self.get_logger().error(f'Path planning failed: {str(e)}')
+            return
 
     def yaw_to_quaternion(self, yaw):
         """Converts a yaw angle (theta) to a quaternion using tf transformations."""
@@ -278,8 +432,17 @@ class AStarPathPlanner(Node):
         clearance_factor = self.clearance_map[a[1], a[0]] 
         return euclidean_dist / (1.0 + (10**2) * clearance_factor)
     
-
-
+    def goal_callback(self, msg):
+        """Handle new goal pose from end_pose_publisher."""
+        new_end_pose = (msg.x, msg.y)
+        
+        # Only update if goal has changed and initial path was already planned
+        if (self.initial_path_planned and new_end_pose != self.end_pose):
+            self.get_logger().info(f'New goal received: {new_end_pose}')
+            self.end_pose = new_end_pose
+            if self.map_processed and self.current_pose:
+                self.plan_path()
+                self.last_end_pose = new_end_pose
 
 
 def main(args=None):

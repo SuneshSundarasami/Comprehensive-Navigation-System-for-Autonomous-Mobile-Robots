@@ -3,8 +3,9 @@ from glob import glob
 import os
 
 package_name = 'amr_project_amr_t04'
-module_name = 'motion_and_path_planning'
+motion_planner_module = 'motion_and_path_planning'
 exploration_module = 'environment_exploration'
+localizer_module = 'localization'
 
 setup(
     name=package_name,
@@ -15,7 +16,9 @@ setup(
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         # Add this line to include launch files
-        (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py'))
+        (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
+        # Add config files
+        (os.path.join('share', package_name, 'config'), glob('config/*.yaml'))
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -26,12 +29,15 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            f'pfieldmodel = {module_name}.potential_field_implementation:main',
-            f'astar = {module_name}.a_star_path_planner:main',
-            f'pose_exec = {module_name}.pose_execuetor:main',
-            f'path_vis = {module_name}.path_visualizer:main',
+            f'pfieldmodel = {motion_planner_module}.potential_field_implementation:main',
+            f'pfieldmodel2 = {motion_planner_module}.pfield_v2:main',
+            f'astar = {motion_planner_module}.a_star_path_planner:main',
+            f'pose_exec = {motion_planner_module}.pose_execuetor:main',
+            f'path_vis = {motion_planner_module}.path_visualizer:main',
             # Add frontier explorer entry point
             f'frontier_explorer = {exploration_module}.frontier_explorer:main',
+            f'particle_filter = {localizer_module}.particle_filter:main',
+            f'particle_filter_visualizer = {localizer_module}.visualize_particle_filter:main',
         ],
     },
 )

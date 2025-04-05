@@ -12,6 +12,13 @@ class PoseExecutor(Node):
     def __init__(self):
         super().__init__('pose_executor')
         
+        # Add progress publisher
+        self.progress_pub = self.create_publisher(
+            String,
+            '/pose_progress',
+            10
+        )
+        
         # Remove status subscription and create service client
         self.status_client = self.create_client(Trigger, 'get_pfield_status')
         
@@ -68,7 +75,11 @@ class PoseExecutor(Node):
             if status != self.last_status:
                 self.last_status = status
                 if status in ['Goal Position Reached! Alligned orientation!', 'Waiting for goal pose']:
-                    self.get_logger().info(f"Received status: {status}")
+                    progress_msg = f"Completed pose {self.current_index + 1}/{len(self.pose_list)}"
+                    if self.current_index + 1==len(self.pose_list):
+                        progress_msg="All poses completed!"
+                    self.publish_progress(progress_msg)
+                    
                     time.sleep(2)
                     self.publish_next_pose()
                     
@@ -76,24 +87,46 @@ class PoseExecutor(Node):
             self.get_logger().error(f'Service call failed: {str(e)}')
 
     def path_callback(self, msg):
-        """Receives the planned path and starts execution if not already in progress."""
-        if self.executing:
+        """Receives the planned path and updates execution."""
+        new_poses = msg.poses
+        if not new_poses:
             return
             
-        self.pose_list = msg.poses
-        if not self.pose_list:
-            return
+        # Check if path has changed
+        if self.has_path_changed(new_poses):
+            self.get_logger().info("New path detected, updating poses...")
+            self.pose_list = new_poses
+            self.current_index = 0
+            self.executing = True
+            self.waiting_for_trigger = False
             
-        # Print all received poses
-        print("Received Poses:")
-        for i, pose in enumerate(self.pose_list):
-            x, y, theta = self.extract_pose_2d(pose)
-            print(f"Pose {i+1}: x={x}, y={y}, theta={theta}")
+            # Publish initial path information
+            progress_msg = f"Starting execution of {len(self.pose_list)} poses"
+            self.publish_progress(progress_msg)
             
-        self.current_index = 0
-        self.executing = True
-        self.waiting_for_trigger = False
-        self.publish_current_pose()
+            # Print all received poses
+            print("Received New Poses:")
+            for i, pose in enumerate(self.pose_list):
+                x, y, theta = self.extract_pose_2d(pose)
+                print(f"Pose {i+1}: x={x:.2f}, y={y:.2f}, theta={theta:.2f}")
+            self.publish_current_pose()
+
+    def has_path_changed(self, new_poses):
+        """Check if the new path is different from current path."""
+        if len(new_poses) != len(self.pose_list):
+            return True
+        
+        for new_pose, old_pose in zip(new_poses, self.pose_list):
+            new_x, new_y, new_theta = self.extract_pose_2d(new_pose)
+            old_x, old_y, old_theta = self.extract_pose_2d(old_pose)
+            
+            # Check if positions differ by more than a small threshold
+            if (abs(new_x - old_x) > 0.01 or 
+                abs(new_y - old_y) > 0.01 or 
+                abs(new_theta - old_theta) > 0.01):
+                return True
+        
+        return False
 
     def extract_pose_2d(self, pose):
         """Extracts x, y, and yaw from a PoseStamped message."""
@@ -131,11 +164,19 @@ class PoseExecutor(Node):
         """Publishes the next pose in the list."""
         if self.current_index >= len(self.pose_list):
             self.executing = False
+            self.publish_progress("All poses completed!")
             return
             
         self.waiting_for_trigger = False
         self.current_index += 1
         self.publish_current_pose()
+
+    def publish_progress(self, message):
+        """Publish progress updates"""
+        msg = String()
+        msg.data = message
+        self.progress_pub.publish(msg)
+        self.get_logger().info(message)
 
 def main(args=None):
     rclpy.init(args=args)
